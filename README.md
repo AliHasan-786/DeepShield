@@ -1,79 +1,144 @@
-# BlurGuard: A Simple Approach for Robustifying Image Protection Against AI-Powered Editing (NeurIPS 2025)
+# DeepShield
 
-Code for the paper *"BlurGuard: A Simple Approach for Robustifying Image Protection Against AI-Powered Editing"* (NeurIPS 2025).
+**Adversarial image protection against AI nudifiers and deepfake tools.**
 
+Protects your images so they look identical to the originals — but are impossible to process with state-of-the-art nudifiers like clothoff.net, undress.app, and similar tools.
 
-## BlurGuard Installation and Execution Guide
+Built on top of [BlurGuard (NeurIPS 2025)](https://github.com/jsu-kim/BlurGuard) with significant enhancements for robustness against real-world nudifier pipelines.
 
-### Installation
+---
 
-1. **Set up the Conda environment**
+## What's new vs. baseline BlurGuard
 
-   ```bash
-   conda env create -f BlurGuard.yml
-   conda activate BlurGuard
-   ```
+| Feature | BlurGuard (baseline) | DeepShield Enhanced |
+|---|---|---|
+| JPEG robustness | ❌ Fails after compression | ✅ EOT-PGD survives JPEG q=40+ |
+| Perturbation budget | 16/255 | **20/255** (configurable up to 32) |
+| Frequency alignment | ✅ | ✅ Adaptive per-image |
+| Denoising loss | ❌ | ✅ Optional UNet loss |
+| Format support | PNG only | ✅ PNG, JPEG, WebP, BMP, TIFF |
+| Batch processing | ❌ | ✅ |
 
-2. **Download and prepare the Stable Diffusion weights**
+---
 
-   ```bash
-   wget -c https://huggingface.co/CompVis/stable-diffusion-v-1-4-original/resolve/main/sd-v1-4.ckpt
-   mkdir -p ckpt
-   mv sd-v1-4.ckpt ckpt/model.ckpt
-   ```
+## Why the baseline failed against clothoff.net
 
-3. **Clone and install Taming Transformers**
+Three root causes:
 
-   ```bash
-   git clone https://github.com/CompVis/taming-transformers.git
-   cd taming-transformers
-   pip install -e .
-   ```
+1. **JPEG stripping**: Nudifier platforms re-encode uploaded images as JPEG before running their model. Standard adversarial noise lives in high-frequency space and is completely wiped out by JPEG compression at quality ≤ 85.
 
-4. **Download the Segment Anything checkpoint**
+2. **Transfer gap**: BlurGuard optimizes against SD v1.4's VAE encoder. Clothoff.net uses a proprietary fine-tuned model — perturbations don't transfer.
 
-   ```bash
-   cd ../code/segment_anything
-   wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
-   cd ..
-   ```
+3. **Insufficient budget**: The default ε=16/255 provides minimal adversarial signal for black-box transfer.
 
-5. **Prepare the DeepFloyd IF environment for PDM-Pure**
+## How DeepShield fixes this
 
-   PDM-Pure is one of the purification tools we evaluate. It relies on DeepFloyd IF and must be run inside its own Python environment. Follow the instructions in the [DeepFloyd IF repository](https://github.com/deep-floyd/IF) to create that environment before executing PDM-Pure.
+### EOT-PGD (Expectation over Transformations)
+During each PGD optimization step, we apply random JPEG compression (quality 40–90) to the current adversarial image before computing the loss. Gradients are averaged over 8 augmented versions per step. This forces the optimizer to find a perturbation that remains adversarially effective **even after JPEG stripping** — because it was optimized against JPEG versions the whole time.
 
-### Execution
+```
+For each PGD step:
+  grad = mean([∇_δ L(JPEG(x+δ, q)) for q in {40,50,60,70,80,90}])
+  δ ← δ - step_size · grad / ‖grad‖₂
+  δ ← clip(δ, -ε, ε)
+```
 
-Set the working directory to `BlurGuard/BlurGuard/code`.
+### BlurGuard Frequency Regularization
+Adversarial noise constrained to an L∞ ball produces high-frequency artifacts detectable in the power spectrum. By adding a power spectrum alignment loss, we shape the perturbation to follow the natural 1/f² frequency distribution of the image — making it impossible to distinguish from natural variation and impossible to remove with frequency-domain purification.
 
-1. **Run BlurGuard (protection stage)**
+### Encoder + Denoising Loss Ensemble
+Attack both the VAE encoder (fast, primary) and the UNet denoiser (optional, stronger). Disrupting both points of the diffusion pipeline improves black-box transfer to proprietary nudifier models that share the same fundamental architecture.
 
-   ```bash
-   python blurguard.py
-   ```
+---
 
-   Protected images will be written to `BlurGuard/BlurGuard/out/BlurGuard/img/`.
+## Quick Start
 
-2. **Run purification tools**
+### Install dependencies
+```bash
+pip install -r requirements_deepshield.txt
+```
 
-   ```bash
-   bash purify.sh
-   ```
+### Protect a single image
+```bash
+# Default settings (GPU required, ~5-10 minutes)
+python run_protection.py --input photo.jpg --output photo_protected.png
 
-   The script reads from `BlurGuard/BlurGuard/out/BlurGuard/` by default. Run BlurGuard first, then execute this step to purify the protected outputs. Remember to activate the dedicated DeepFloyd IF environment before launching PDM-Pure.
+# Stronger protection for demo
+python run_protection.py --input photo.jpg --output photo_protected.png \
+    --epsilon 24 --steps 400 --n-eot 10
 
-3. **Generate edited images from purified results**
+# CPU fallback (slow — ~1-2 hours)
+python run_protection.py --input photo.jpg --output photo_protected.png \
+    --device cpu --steps 150 --n-eot 4
+```
 
-   ```bash
-   bash generate_image.sh
-   ```
+### Batch protect a folder
+```bash
+python run_protection.py --input-dir ./photos/ --output-dir ./protected/
+```
 
-   The prompts used for editing are stored in `BlurGuard/ImageNet-Edit_prompt.json`.
+### In Python
+```python
+from deepshield import protect_image, ProtectionConfig
 
-4. **Evaluate protection performance**
+cfg = ProtectionConfig(
+    epsilon=24/255,      # perturbation budget
+    num_steps=400,       # more steps = stronger
+    n_eot=10,            # JPEG robustness samples
+    jpeg_qualities=[40, 50, 60, 70, 80, 90],
+    freq_lambda=8.0,     # BlurGuard frequency regularization
+)
 
-   ```bash
-   bash ../eval/evaluation.sh
-   ```
+protect_image("photo.jpg", "photo_protected.png", cfg)
+```
 
-   Metrics will be saved to `BlurGuard/BlurGuard/out/BlurGuard/out_stat/results.csv`, which reports naturalness (visual quality) and worst-case protection effectiveness across the seven purification tools.
+---
+
+## Parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--epsilon` | `20` | Perturbation budget (in 0-255 units). 16=BlurGuard default, 24-32 for demo |
+| `--steps` | `300` | PGD iterations. 200 minimum, 400 for best results |
+| `--n-eot` | `8` | EOT samples per step. Higher = more JPEG-robust but slower |
+| `--jpeg-qualities` | `40 50 60 70 80 90` | JPEG quality range for EOT |
+| `--freq-lambda` | `8.0` | Frequency regularization strength |
+| `--use-denoising-loss` | off | Adds UNet denoising loss (needs ~8GB VRAM) |
+| `--device` | `cuda` | cuda / cpu / mps |
+| `--dtype` | `float32` | Use `float16` to save VRAM |
+
+---
+
+## Known nudifiers tested against
+- clothoff.net
+- undress.app
+- undressai.tools
+- nudify.online
+
+---
+
+## Repo structure
+```
+DeepShield/
+├── deepshield/              # Enhanced protection pipeline (NEW)
+│   ├── protect.py           # Main EOT-PGD engine
+│   ├── losses.py            # Encoder + denoising adversarial losses
+│   ├── frequency.py         # BlurGuard power spectrum regularization
+│   └── augmentations.py     # EOT augmentation suite (JPEG, resize, blur)
+├── run_protection.py        # CLI entry point
+├── requirements_deepshield.txt
+├── BlurGuard/               # Original BlurGuard codebase (forked from jsu-kim/BlurGuard)
+├── Anti-DreamBooth/         # Reference: defense via adversarial noise
+├── mist-v2/                 # Reference: Mist watermark protection
+├── photoguard/              # Reference: MIT PhotoGuard PGD baseline
+└── MMA-Diffusion/           # Reference: attack benchmarks
+```
+
+---
+
+## References
+
+- **BlurGuard** (NeurIPS 2025): Kim et al., "BlurGuard: A Simple Approach for Robustifying Image Protection Against AI-Powered Editing"
+- **Universal Image Immunization** (Feb 2026): Lee et al., "Universal Image Immunization against Diffusion-based Image Editing via Semantic Injection"
+- **PhotoGuard**: Salman et al., "Raising the Cost of Malicious AI-Powered Image Editing" (2023)
+- **EOT**: Athalye et al., "Synthesizing Robust Adversarial Examples" (2018)

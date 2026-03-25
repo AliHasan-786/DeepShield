@@ -1,0 +1,21 @@
+# DeepShield Enhanced Protection — Dependencies
+# Tested on Python 3.10+, CUDA 11.8+
+
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Diffusion models (surrogate for adversarial optimization)
+diffusers>=0.25.0
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Image processing
+Pillow>=9.0.0
+numpy>=1.24.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Optional: for SAM-based body segmentation (future enhancement)
+# segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
