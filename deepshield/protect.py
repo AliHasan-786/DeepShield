@@ -23,7 +23,7 @@ Why each component matters:
 import os
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -219,6 +219,35 @@ def load_unet_and_scheduler(model_id: str, device: torch.device, dtype: torch.dt
     return unet, scheduler, text_embeddings
 
 
+def build_runtime(cfg: ProtectionConfig) -> Dict[str, Any]:
+    """
+    Load and retain model state for repeated protection requests.
+
+    This is intended for long-lived processes such as an API worker so the VAE
+    and optional UNet do not need to be reloaded for every image.
+    """
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    if str(device) == "cuda" and not torch.cuda.is_available():
+        print("[DeepShield] WARNING: CUDA not available, falling back to CPU (will be slow).")
+        device = torch.device("cpu")
+
+    vae = load_vae(cfg.model_id, device, cfg.dtype)
+
+    unet, noise_scheduler, text_embeddings = None, None, None
+    if cfg.use_denoising_loss:
+        unet, noise_scheduler, text_embeddings = load_unet_and_scheduler(
+            cfg.model_id, device, cfg.dtype
+        )
+
+    return {
+        "device": device,
+        "vae": vae,
+        "unet": unet,
+        "noise_scheduler": noise_scheduler,
+        "text_embeddings": text_embeddings,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core EOT-PGD protection loop
 # ──────────────────────────────────────────────────────────────────────────────
@@ -336,6 +365,8 @@ def protect_image(
     input_path: str,
     output_path: str,
     cfg: Optional[ProtectionConfig] = None,
+    runtime: Optional[Dict[str, Any]] = None,
+    also_save_jpeg: bool = True,
 ) -> str:
     """
     Protect an image against AI nudifiers using DeepShield.
@@ -362,8 +393,8 @@ def protect_image(
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
 
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    if str(device) == "cuda" and not torch.cuda.is_available():
+    device = runtime["device"] if runtime else torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    if not runtime and str(device) == "cuda" and not torch.cuda.is_available():
         print("[DeepShield] WARNING: CUDA not available, falling back to CPU (will be slow).")
         device = torch.device("cpu")
 
@@ -376,14 +407,19 @@ def protect_image(
     print(f"[DeepShield] Loaded '{input_path}' ({orig_size[0]}×{orig_size[1]}) → resized to {cfg.image_size}×{cfg.image_size}")
 
     # ── Load models ──
-    vae = load_vae(cfg.model_id, device, cfg.dtype)
+    vae = runtime["vae"] if runtime else load_vae(cfg.model_id, device, cfg.dtype)
     z_target = get_gray_target(vae, x_orig)
 
-    unet, noise_scheduler, text_embeddings = None, None, None
-    if cfg.use_denoising_loss:
-        unet, noise_scheduler, text_embeddings = load_unet_and_scheduler(
-            cfg.model_id, device, cfg.dtype
-        )
+    if runtime:
+        unet = runtime["unet"]
+        noise_scheduler = runtime["noise_scheduler"]
+        text_embeddings = runtime["text_embeddings"]
+    else:
+        unet, noise_scheduler, text_embeddings = None, None, None
+        if cfg.use_denoising_loss:
+            unet, noise_scheduler, text_embeddings = load_unet_and_scheduler(
+                cfg.model_id, device, cfg.dtype
+            )
 
     # ── EOT-PGD ──
     print(f"\n[DeepShield] Starting EOT-PGD ({cfg.num_steps} steps × {cfg.n_eot} augmentations)...")
@@ -413,12 +449,14 @@ def protect_image(
     print(f"\n[DeepShield] Final perturbation: L∞={l_inf:.2f}/255, L2={l2:.2f}")
 
     # ── Save ──
-    out_path = save_protected_image(x_protected, orig_size, output_path)
+    out_path = save_protected_image(x_protected, orig_size, output_path, also_save_jpeg=also_save_jpeg)
 
-    # Clean up GPU memory
-    del vae, z_target, delta
-    if unet is not None:
-        del unet, text_embeddings
-    torch.cuda.empty_cache()
+    # Clean up request-scoped memory.
+    del z_target, delta
+    if not runtime:
+        del vae
+        if unet is not None:
+            del unet, text_embeddings
+        torch.cuda.empty_cache()
 
     return out_path

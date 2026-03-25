@@ -92,6 +92,40 @@ cfg = ProtectionConfig(
 protect_image("photo.jpg", "photo_protected.png", cfg)
 ```
 
+### Run the EC2 API worker
+```bash
+pip install -r requirements_deepshield.txt
+
+# Optional but recommended
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements_deepshield.txt
+
+# Start the FastAPI server
+./scripts/run_api.sh
+```
+
+Health and process endpoints:
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/process -F image=@photo.jpg -o protected.png
+```
+
+### Run via systemd on EC2
+Copy `deploy/deepshield-api.service` to `/etc/systemd/system/deepshield-api.service`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable deepshield-api
+sudo systemctl start deepshield-api
+sudo systemctl status deepshield-api
+```
+
+To stop the worker when you are not using the EC2 instance:
+```bash
+sudo systemctl stop deepshield-api
+```
+
 ---
 
 ## Parameters
