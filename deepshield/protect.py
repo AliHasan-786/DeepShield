@@ -243,13 +243,23 @@ def save_protected_image(
 # Model loading
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Fallback model IDs for models that may be removed/restricted on HuggingFace.
+# Stability AI deprecated some SD 2.x models in 2026 (EU AI Act compliance).
+# Community mirrors are used as fallbacks.
+_MODEL_FALLBACKS = {
+    "stabilityai/stable-diffusion-2-1": "sd2-community/stable-diffusion-2-1",
+    "stabilityai/stable-diffusion-2-inpainting": "sd2-community/stable-diffusion-2-inpainting",
+}
+
+
 def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
     """Load just the VAE from a Stable Diffusion / Flux / SD3 model checkpoint.
 
     Handles:
       - Standard SD models (VAE in 'vae' subfolder)
       - Standalone VAEs at the top level (e.g. sd-vae-ft-mse)
-      - Gated models (Flux, SD 3.5) — requires HuggingFace token
+      - Gated models (SD 3.5) — requires HuggingFace token
+      - Removed/deprecated models — tries community mirror fallbacks
       - Different latent dimensions (4ch for SD 1.x/2.x/XL, 16ch for Flux/SD3)
 
     For gated models, set HF_TOKEN env var or run `huggingface-cli login`.
@@ -258,34 +268,59 @@ def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
     from diffusers import AutoencoderKL
 
     hf_token = os.environ.get("HF_TOKEN", None)
-    print(f"[DeepShield] Loading VAE from '{model_id}'...")
 
     load_kwargs = {"torch_dtype": dtype}
     if hf_token:
         load_kwargs["token"] = hf_token
 
-    try:
-        vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", **load_kwargs)
-    except (OSError, ValueError, Exception) as e:
-        try:
-            # Some models have VAE at top level (e.g. sd-vae-ft-mse)
-            vae = AutoencoderKL.from_pretrained(model_id, **load_kwargs)
-        except Exception as e2:
-            # If it's a gated model auth issue, give a helpful message
-            err_str = str(e) + str(e2)
-            if "401" in err_str or "403" in err_str or "gated" in err_str.lower():
-                print(f"[DeepShield] WARNING: '{model_id}' is a gated model. "
-                      f"Accept the license at https://huggingface.co/{model_id} "
-                      f"and set HF_TOKEN env var. Skipping this model.")
-                return None
-            raise
+    # Try the model ID, then its fallback if it fails
+    ids_to_try = [model_id]
+    if model_id in _MODEL_FALLBACKS:
+        ids_to_try.append(_MODEL_FALLBACKS[model_id])
 
-    latent_ch = getattr(vae.config, "latent_channels", 4)
-    vae = vae.to(device).eval()
-    for p in vae.parameters():
-        p.requires_grad_(False)
-    print(f"[DeepShield] VAE loaded and frozen ({model_id}, {latent_ch}ch latent).")
-    return vae
+    for mid in ids_to_try:
+        print(f"[DeepShield] Loading VAE from '{mid}'...")
+        try:
+            vae = AutoencoderKL.from_pretrained(mid, subfolder="vae", **load_kwargs)
+            latent_ch = getattr(vae.config, "latent_channels", 4)
+            vae = vae.to(device).eval()
+            for p in vae.parameters():
+                p.requires_grad_(False)
+            if mid != model_id:
+                print(f"[DeepShield] VAE loaded from fallback '{mid}' ({latent_ch}ch latent).")
+            else:
+                print(f"[DeepShield] VAE loaded and frozen ({mid}, {latent_ch}ch latent).")
+            return vae
+        except Exception as e1:
+            try:
+                # Some models have VAE at top level (e.g. sd-vae-ft-mse)
+                vae = AutoencoderKL.from_pretrained(mid, **load_kwargs)
+                latent_ch = getattr(vae.config, "latent_channels", 4)
+                vae = vae.to(device).eval()
+                for p in vae.parameters():
+                    p.requires_grad_(False)
+                if mid != model_id:
+                    print(f"[DeepShield] VAE loaded from fallback '{mid}' ({latent_ch}ch latent).")
+                else:
+                    print(f"[DeepShield] VAE loaded and frozen ({mid}, {latent_ch}ch latent).")
+                return vae
+            except Exception as e2:
+                err_str = str(e1) + str(e2)
+                # If this was the primary ID and we have a fallback, try next
+                if mid != ids_to_try[-1]:
+                    print(f"[DeepShield] '{mid}' not available, trying fallback...")
+                    continue
+                # Last attempt failed — classify the error
+                if "401" in err_str or "403" in err_str or "gated" in err_str.lower():
+                    print(f"[DeepShield] WARNING: '{model_id}' is a gated model. "
+                          f"Accept the license at https://huggingface.co/{model_id} "
+                          f"and set HF_TOKEN env var. Skipping.")
+                elif "404" in err_str or "not found" in err_str.lower() or "does not exist" in err_str.lower():
+                    print(f"[DeepShield] WARNING: '{model_id}' not found on HuggingFace "
+                          f"(may have been removed/deprecated). Skipping.")
+                else:
+                    print(f"[DeepShield] WARNING: Failed to load '{model_id}': {e2}. Skipping.")
+                return None
 
 
 def load_unet_and_scheduler(model_id: str, device: torch.device, dtype: torch.dtype):
