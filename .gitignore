@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Model weights (too large for git)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+
+# Stable Diffusion local models
+stable-diffusion/
+models/
+weights/
+checkpoints/
+
+# Experiment outputs
+exp_outputs/
+outputs/
+results/
+runs/
+logs/
+
+# Large data directories
+data/
+datasets/
+ImageNet-Edit/
+
+# Test / temp images (keep originals, not protected versions in CI)
+*_deepshield.png
+*_jpeg_robustness_test.jpg
+*_protected.png
+Bo1_protected.png
+Bo2_protected.png
+test1_protected.png
+test2_protected.png
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.vscode/
+.idea/
+
+# Accelerate / HuggingFace cache
+.accelerate/
+.huggingface/
+hub/

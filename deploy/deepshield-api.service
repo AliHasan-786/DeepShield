@@ -1,0 +1,21 @@
+[Unit]
+Description=DeepShield FastAPI worker
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/DeepShield
+Environment=DEEPSHIELD_HOST=0.0.0.0
+Environment=DEEPSHIELD_PORT=8000
+Environment=DEEPSHIELD_DEVICE=cuda
+Environment=DEEPSHIELD_EPSILON=20
+Environment=DEEPSHIELD_STEPS=300
+Environment=DEEPSHIELD_N_EOT=8
+Environment=DEEPSHIELD_ALLOW_ORIGINS=*
+ExecStart=/home/ubuntu/DeepShield/scripts/run_api.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
