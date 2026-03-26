@@ -16,9 +16,9 @@ Built on top of [BlurGuard (NeurIPS 2025)](https://github.com/jsu-kim/BlurGuard)
 | Perturbation budget | 16/255 | **24/255** recommended (configurable up to 32) |
 | Frequency alignment | Yes | Adaptive per-image |
 | Denoising loss | No | Optional UNet loss |
-| **Multi-model ensemble** | No | **Up to 6 VAEs for black-box transfer** |
+| **Multi-model ensemble** | No | **Up to 8 VAEs (SD 1.x, 2.x, SDXL, Flux, SD 3.5)** |
 | **Perceptual quality (LPIPS)** | No | **Hides noise in textures, away from skin** |
-| **Ensemble presets** | No | **standard / nudifier / max** |
+| **Ensemble presets** | No | **standard / nudifier / nudifier-v2 / max** |
 | Format support | PNG only | PNG, JPEG, WebP, BMP, TIFF |
 | Batch processing | No | Yes |
 
@@ -28,11 +28,14 @@ Built on top of [BlurGuard (NeurIPS 2025)](https://github.com/jsu-kim/BlurGuard)
 
 ### v0.3.0 — Multi-model ensemble + perceptual quality
 
-- **Multi-model ensemble attack**: Averages adversarial gradients across multiple VAE encoders simultaneously. Instead of optimizing against a single SD v1.5 model, we attack 3-6 models at once (SD 1.5, SD inpainting, SD 2.1, SDXL inpainting, community NSFW VAEs). This finds a perturbation that corrupts the shared latent space structure across all SD-family models, dramatically improving black-box transfer to unknown nudifiers like clothoff.net.
-- **Ensemble presets**: Three curated configurations (`standard`, `nudifier`, `max`) targeting different VRAM budgets and protection levels.
-- **LPIPS perceptual quality loss**: Optional constraint that keeps protected images visually close to originals by penalizing perceptual distortion. Naturally concentrates noise in textured regions (hair, clothing) where it's invisible and away from smooth areas (skin) where it's obvious.
-- **Nudifier-specific surrogate models**: Added `stabilityai/sd-vae-ft-mse` (used by Realistic Vision and community NSFW models), `stabilityai/stable-diffusion-2-inpainting`, and `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` as ensemble targets.
-- **API server defaults to `nudifier` preset** with ensemble enabled out of the box.
+- **Multi-model ensemble attack**: Averages adversarial gradients across up to 8 VAE encoders simultaneously — SD 1.5, SD inpainting, SD 2.x, SDXL, Flux, and SD 3.5. Covers both current-gen (SD-based) and next-gen (Flux/SD3.5-based) nudifier architectures.
+- **Four ensemble presets**: `standard` (3 VAEs), `nudifier` (5 VAEs), `nudifier-v2` (7 VAEs, recommended), `max` (8 VAEs) targeting different VRAM budgets.
+- **Next-gen model coverage**: Added Flux (FLUX.1-schnell, Apache 2.0) and SD 3.5 Large VAEs — the architectures nudifiers are actively migrating to in 2025-2026.
+- **LPIPS perceptual quality loss**: Optional constraint that concentrates noise in textured regions (hair, clothing) and away from smooth areas (skin) for better visual quality.
+- **Nudifier-specific surrogate models**: Added `stabilityai/sd-vae-ft-mse` (Realistic Vision / community NSFW VAE), `stabilityai/stable-diffusion-2-inpainting`, and `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`.
+- **Graceful gated model handling**: If a HuggingFace-gated model (SD 3.5) can't load, it's skipped with a warning instead of crashing.
+- **All models commercially licensable**: Flux-schnell (Apache 2.0), SD 3.5/SDXL (Stability Community License, free under 1M revenue), SD 1.x/2.x (CreativeML Open RAIL-M).
+- **API server defaults to `nudifier-v2` preset** with ensemble enabled out of the box.
 
 ### v0.2.0 — Initial DeepShield
 
@@ -122,7 +125,7 @@ cfg = ProtectionConfig(
     epsilon=24/255,
     num_steps=400,
     n_eot=10,
-    ensemble_model_ids=ENSEMBLE_PRESETS["nudifier"]["models"],
+    ensemble_model_ids=ENSEMBLE_PRESETS["nudifier-v2"]["models"],
     lpips_weight=2.0,
     freq_lambda=8.0,
 )
@@ -220,14 +223,15 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 |---|---|---|
 | `standard` | 12GB | g5.xlarge (24GB A10G) |
 | `nudifier` | 16GB | g5.xlarge (24GB A10G) |
-| `max` | 20GB | g5.xlarge (24GB A10G) |
+| `nudifier-v2` | 20GB | g5.xlarge (24GB A10G) |
+| `max` | 24GB | g5.xlarge (24GB A10G) |
 
 ### Run the API server
 ```bash
 pip install -r requirements_deepshield.txt
 
 # Configure (these are the recommended production defaults)
-export HF_TOKEN=hf_your_token_here      # required for Flux + SD 3.5 (gated models)
+export HF_TOKEN=hf_your_token_here      # required for SD 3.5 (gated model)
 export DEEPSHIELD_ENSEMBLE_PRESET=nudifier-v2
 export DEEPSHIELD_EPSILON=24
 export DEEPSHIELD_STEPS=400
