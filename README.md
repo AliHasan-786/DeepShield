@@ -166,12 +166,14 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 | `stabilityai/stable-diffusion-2-inpainting` | SD 2.x inpaint | 4ch | Different VAE weights from SD 1.x — covers SD 2.x-based nudifiers |
 | `stabilityai/sd-vae-ft-mse` | Community VAE | 4ch | Used by Realistic Vision + community NSFW models for better skin quality |
 | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | SDXL inpaint | 4ch | Larger architecture — covers SDXL-based nudifier tools |
-| `black-forest-labs/FLUX.1-dev` | **Flux** (2024) | **16ch** | **Next-gen architecture** from ex-Stability AI team. Completely different VAE. CivitAI already has Flux-based NSFW models ("Fluxed Up", "CHROMA"). Nudifiers are migrating here. |
+| `black-forest-labs/FLUX.1-schnell` | **Flux** (2024) | **16ch** | **Next-gen architecture** from ex-Stability AI team. Same VAE as FLUX.1-dev but Apache 2.0 licensed (commercial OK). CivitAI already has Flux-based NSFW models ("Fluxed Up", "CHROMA"). Nudifiers are migrating here. |
 | `stabilityai/stable-diffusion-3.5-large` | **SD 3.5 MMDiT** (2025) | **16ch** | **Latest Stability AI model.** Different VAE from all prior SD versions. Covers the newest generation of tools. |
 
 **Key insight**: We don't train any models. These are all pre-trained open-source models loaded as-is from HuggingFace. We just use their VAE encoders as surrogate targets during adversarial optimization. The more diverse the surrogate set, the better the perturbation transfers to unknown black-box nudifiers.
 
-**Note on gated models**: Flux and SD 3.5 are gated on HuggingFace — you must accept their license and set `HF_TOKEN` env var before use. If a gated model can't load, DeepShield skips it gracefully and continues with the remaining models.
+**Note on gated models**: SD 3.5 is gated on HuggingFace — accept the license at https://huggingface.co/stabilityai/stable-diffusion-3.5-large and set `HF_TOKEN` env var. FLUX.1-schnell is Apache 2.0 (no approval needed). If a gated model can't load, DeepShield skips it gracefully and continues with the remaining models.
+
+**Commercial license summary**: All models in `nudifier-v2` are commercially usable. Flux-schnell is Apache 2.0. SD 3.5 and SDXL are Stability AI Community License (free under 1M monthly revenue). SD 1.x/2.x are CreativeML Open RAIL-M (commercial OK).
 
 ---
 

@@ -151,7 +151,7 @@ ENSEMBLE_PRESETS = {
             "stabilityai/stable-diffusion-2-inpainting",           # SD 2.x inpainting
             "stabilityai/sd-vae-ft-mse",                           # Community NSFW VAE (Realistic Vision etc.)
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",   # SDXL inpainting
-            "black-forest-labs/FLUX.1-dev",                        # Flux VAE — next-gen architecture (16ch latent)
+            "black-forest-labs/FLUX.1-schnell",                     # Flux VAE — same VAE as FLUX.1-dev, Apache 2.0 (commercial OK)
             "stabilityai/stable-diffusion-3.5-large",              # SD 3.5 VAE — latest Stability AI architecture
         ],
     },
