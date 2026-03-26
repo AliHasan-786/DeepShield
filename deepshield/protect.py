@@ -252,13 +252,16 @@ _MODEL_FALLBACKS = {
 }
 
 
-def _validate_vae_compatibility(vae, model_id: str) -> bool:
+def _validate_vae_compatibility(vae, model_id: str, device: torch.device) -> bool:
     """Check that a loaded VAE uses 4-channel latents with 8x downsampling.
 
     VAEs from Flux (16ch) and some SD 3.5 variants use different latent
     structures that are incompatible with our encoder_loss (MSE against a
-    4ch gray target).  SDXL community inpainting models sometimes use 16x
-    downsampling producing 32×32 latents at 512 input — also incompatible.
+    4ch gray target).
+
+    Instead of guessing from config (unreliable — SD v1.5 has 4 down blocks
+    but only 3 actually downsample), we do a quick test encode on a tiny
+    tensor to check the actual output shape.
 
     Returns True if the VAE is compatible, False otherwise.
     """
@@ -268,14 +271,20 @@ def _validate_vae_compatibility(vae, model_id: str) -> bool:
               f"(need 4ch). Flux/SD3 VAEs are not yet supported in ensemble mode.")
         return False
 
-    # Check downsample factor by inspecting the number of downsampling blocks.
-    # Standard SD VAEs have 3 down blocks → 2^3 = 8x downsampling.
-    # Some community forks have 4 down blocks → 16x downsampling.
-    n_down = len(getattr(vae.config, "down_block_types", [""] * 3))
-    downsample_factor = 2 ** n_down
-    if downsample_factor not in (8,):
-        print(f"[DeepShield] SKIP '{model_id}': uses {downsample_factor}x "
-              f"downsampling (need 8x). Latent size would be incompatible.")
+    # Quick test encode to verify actual downsample factor
+    try:
+        test_size = 64  # small test image to save memory
+        test_input = torch.zeros(1, 3, test_size, test_size, device=device, dtype=next(vae.parameters()).dtype)
+        with torch.no_grad():
+            test_latent = vae.encode(test_input).latent_dist.mean
+        spatial = test_latent.shape[-1]
+        downsample = test_size // spatial
+        if downsample != 8:
+            print(f"[DeepShield] SKIP '{model_id}': actual downsample is {downsample}x "
+                  f"(need 8x). {test_size}px input → {spatial}px latent.")
+            return False
+    except Exception as e:
+        print(f"[DeepShield] SKIP '{model_id}': test encode failed: {e}")
         return False
 
     return True
@@ -333,18 +342,18 @@ def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
                     print(f"[DeepShield] WARNING: Failed to load '{model_id}': {e}. Skipping.")
                 return None
 
-        # Successfully loaded — validate compatibility before freezing
-        if not _validate_vae_compatibility(vae, mid):
-            del vae
-            # If we have a fallback, try it
-            if mid != ids_to_try[-1]:
-                continue
-            return None
-
+        # Move to device first, then validate with a real test encode
         latent_ch = getattr(vae.config, "latent_channels", 4)
         vae = vae.to(device).eval()
         for p in vae.parameters():
             p.requires_grad_(False)
+
+        if not _validate_vae_compatibility(vae, mid, device):
+            del vae
+            torch.cuda.empty_cache() if device.type == "cuda" else None
+            if mid != ids_to_try[-1]:
+                continue
+            return None
         label = f"fallback '{mid}'" if mid != model_id else mid
         print(f"[DeepShield] VAE loaded and frozen ({label}, {latent_ch}ch latent, 8x downsample).")
         return vae
