@@ -26,6 +26,13 @@ import torch.nn.functional as F
 # Encoder attack (primary loss — fast)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _match_module_input(x: torch.Tensor, module) -> torch.Tensor:
+    """Cast input tensors to the module parameter dtype/device."""
+    ref = next(module.parameters())
+    if x.device != ref.device or x.dtype != ref.dtype:
+        return x.to(device=ref.device, dtype=ref.dtype)
+    return x
+
 def get_gray_target(vae, x: torch.Tensor) -> torch.Tensor:
     """
     Encode a uniform gray image as the attack target.
@@ -69,6 +76,7 @@ def encoder_loss(
     Returns:
         Scalar loss (channel-normalized).
     """
+    x_adv = _match_module_input(x_adv, vae)
     z_adv = vae.encode(x_adv).latent_dist.mean
     n_channels = z_adv.shape[1]
     return F.mse_loss(z_adv, z_target) / n_channels
@@ -114,6 +122,7 @@ def denoising_loss(
         timesteps = random.choices([100, 200, 300, 400, 500, 600, 700, 800], k=4)
 
     # Encode image to latent space
+    x_adv = _match_module_input(x_adv, vae)
     with torch.no_grad():
         posterior = vae.encode(x_adv)
     z0 = posterior.latent_dist.sample() * vae.config.scaling_factor

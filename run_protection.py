@@ -27,6 +27,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
 
@@ -243,7 +244,7 @@ def build_config(args):
     )
 
 
-def get_output_path(input_path: str, output_arg: str | None) -> str:
+def get_output_path(input_path: str, output_arg: Optional[str]) -> str:
     """Derive output path from input if not specified."""
     if output_arg:
         return output_arg

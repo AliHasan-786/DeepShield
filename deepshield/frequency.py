@@ -46,7 +46,7 @@ def compute_rapsd(x: torch.Tensor, n_bands: int = 16) -> torch.Tensor:
         RAPSD vector of shape [n_bands], values > 0 (ε-clipped for log safety).
     """
     # Average channels → grayscale for frequency analysis
-    x_gray = x.mean(dim=0)  # [H, W]
+    x_gray = x.mean(dim=0).to(dtype=torch.float32)  # [H, W]
     H, W = x_gray.shape
 
     # 2D FFT → power spectrum
@@ -111,9 +111,14 @@ def frequency_reg_loss(
 # Learnable Gaussian blur for spectrum alignment
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _make_gaussian_kernel(sigma: float, kernel_size: int, device: torch.device) -> torch.Tensor:
+def _make_gaussian_kernel(
+    sigma: float,
+    kernel_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
     """Build a 2D Gaussian kernel for a given sigma."""
-    coords = torch.arange(kernel_size, device=device, dtype=torch.float32)
+    coords = torch.arange(kernel_size, device=device, dtype=dtype)
     coords -= kernel_size // 2
     g = torch.exp(-(coords ** 2) / (2 * sigma ** 2 + 1e-8))
     g /= g.sum()
@@ -143,7 +148,12 @@ def apply_gaussian_blur_to_perturbation(
         Blurred perturbation, same shape.
     """
     C = perturbation.shape[1]
-    kernel = _make_gaussian_kernel(sigma, kernel_size, perturbation.device)
+    kernel = _make_gaussian_kernel(
+        sigma,
+        kernel_size,
+        perturbation.device,
+        perturbation.dtype,
+    )
     kernel = kernel.view(1, 1, kernel_size, kernel_size).expand(C, 1, -1, -1)
     padding = kernel_size // 2
     return F.conv2d(perturbation, kernel, padding=padding, groups=C)

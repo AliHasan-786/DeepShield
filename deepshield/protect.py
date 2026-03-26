@@ -496,14 +496,15 @@ def eot_pgd(
     is_ensemble = n_models > 1
     mode_str = f"EOT-PGD (ensemble: {n_models} VAEs)" if is_ensemble else "EOT-PGD"
 
-    # Initialize delta with small random noise within epsilon ball
-    delta = (torch.rand_like(x_orig) * 2.0 - 1.0) * epsilon * 0.1
+    # Initialize from a random point inside the full L∞ epsilon ball.
+    # A small init underuses the budget and weakens transfer.
+    delta = (torch.rand_like(x_orig) * 2.0 - 1.0) * epsilon
     delta = delta.to(x_orig.device)
 
     pbar = tqdm(range(cfg.num_steps), desc=mode_str)
 
     try:
-        for step in range(cfg.num_steps):
+        for step in pbar:
             delta.requires_grad_(True)
             x_adv = (x_orig + delta).clamp(-1.0, 1.0)
 
@@ -553,9 +554,8 @@ def eot_pgd(
             loss_log["total"] = total_eot_loss.item()
             loss_avg = {"total": loss_log["total"], "encoder": loss_log["encoder"] / cfg.n_eot}
 
-            # ── PGD step with L2 gradient normalization (BlurGuard style) ──
-            grad_norm = grad_accum.norm(2) + 1e-8
-            delta = delta.detach() - step_size * (grad_accum / grad_norm)
+            # ── PGD step for an L∞-bounded attack ──
+            delta = delta.detach() - step_size * grad_accum.sign()
 
             # ── Project to L∞ epsilon ball ──
             delta = delta.clamp(-epsilon, epsilon)
@@ -577,6 +577,8 @@ def eot_pgd(
         print("\n[DeepShield] ERROR: CUDA out of memory during PGD optimization.")
         print("[DeepShield] Try: --dtype float16, fewer --steps, smaller --ensemble, or lower --n-eot")
         print(f"[DeepShield] Returning best delta from step {step}/{cfg.num_steps}.")
+        if x_orig.device.type == "cuda":
+            torch.cuda.empty_cache()
         # Return whatever delta we have so far — partial protection is better than none
 
     return delta.detach()
@@ -680,14 +682,34 @@ def protect_image(
 
     x_protected = (x_orig + delta).clamp(-1.0, 1.0)
 
+    pre_align_delta = x_protected - x_orig
+    pre_align_l_inf = pre_align_delta.abs().max().item() * 255
+    pre_align_l2 = pre_align_delta.norm(2).item()
+    print(f"[DeepShield] Pre-alignment perturbation: L∞={pre_align_l_inf:.2f}/255, L2={pre_align_l2:.2f}")
+
     # ── BlurGuard adaptive frequency alignment ──
     if cfg.apply_freq_alignment:
         print("\n[DeepShield] Applying BlurGuard adaptive frequency alignment...")
-        x_protected, sigma_used = adaptive_blur_alignment(
-            x_protected,
-            x_orig,
-            n_steps=cfg.freq_align_steps,
-        )
+        try:
+            x_protected, sigma_used = adaptive_blur_alignment(
+                x_protected,
+                x_orig,
+                n_steps=cfg.freq_align_steps,
+            )
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
+            if device.type != "cuda":
+                raise
+
+            print(f"[DeepShield] WARNING: GPU frequency alignment failed: {exc}")
+            print("[DeepShield] Retrying frequency alignment on CPU.")
+            torch.cuda.empty_cache()
+
+            x_protected_cpu, sigma_used = adaptive_blur_alignment(
+                x_protected.detach().cpu(),
+                x_orig.detach().cpu(),
+                n_steps=cfg.freq_align_steps,
+            )
+            x_protected = x_protected_cpu.to(device=device, dtype=cfg.dtype)
         print(f"[DeepShield] Optimal blur sigma: {sigma_used:.3f}")
 
     # ── Compute and report final perturbation stats ──
