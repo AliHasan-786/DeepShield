@@ -252,6 +252,35 @@ _MODEL_FALLBACKS = {
 }
 
 
+def _validate_vae_compatibility(vae, model_id: str) -> bool:
+    """Check that a loaded VAE uses 4-channel latents with 8x downsampling.
+
+    VAEs from Flux (16ch) and some SD 3.5 variants use different latent
+    structures that are incompatible with our encoder_loss (MSE against a
+    4ch gray target).  SDXL community inpainting models sometimes use 16x
+    downsampling producing 32×32 latents at 512 input — also incompatible.
+
+    Returns True if the VAE is compatible, False otherwise.
+    """
+    latent_ch = getattr(vae.config, "latent_channels", 4)
+    if latent_ch != 4:
+        print(f"[DeepShield] SKIP '{model_id}': uses {latent_ch}-channel latents "
+              f"(need 4ch). Flux/SD3 VAEs are not yet supported in ensemble mode.")
+        return False
+
+    # Check downsample factor by inspecting the number of downsampling blocks.
+    # Standard SD VAEs have 3 down blocks → 2^3 = 8x downsampling.
+    # Some community forks have 4 down blocks → 16x downsampling.
+    n_down = len(getattr(vae.config, "down_block_types", [""] * 3))
+    downsample_factor = 2 ** n_down
+    if downsample_factor not in (8,):
+        print(f"[DeepShield] SKIP '{model_id}': uses {downsample_factor}x "
+              f"downsampling (need 8x). Latent size would be incompatible.")
+        return False
+
+    return True
+
+
 def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
     """Load just the VAE from a Stable Diffusion / Flux / SD3 model checkpoint.
 
@@ -260,7 +289,7 @@ def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
       - Standalone VAEs at the top level (e.g. sd-vae-ft-mse)
       - Gated models (SD 3.5) — requires HuggingFace token
       - Removed/deprecated models — tries community mirror fallbacks
-      - Different latent dimensions (4ch for SD 1.x/2.x/XL, 16ch for Flux/SD3)
+      - Validates latent compatibility (4ch, 8x downsample) before returning
 
     For gated models, set HF_TOKEN env var or run `huggingface-cli login`.
     """
@@ -282,45 +311,45 @@ def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
         print(f"[DeepShield] Loading VAE from '{mid}'...")
         try:
             vae = AutoencoderKL.from_pretrained(mid, subfolder="vae", **load_kwargs)
-            latent_ch = getattr(vae.config, "latent_channels", 4)
-            vae = vae.to(device).eval()
-            for p in vae.parameters():
-                p.requires_grad_(False)
-            if mid != model_id:
-                print(f"[DeepShield] VAE loaded from fallback '{mid}' ({latent_ch}ch latent).")
-            else:
-                print(f"[DeepShield] VAE loaded and frozen ({mid}, {latent_ch}ch latent).")
-            return vae
-        except Exception as e1:
+        except Exception:
             try:
                 # Some models have VAE at top level (e.g. sd-vae-ft-mse)
                 vae = AutoencoderKL.from_pretrained(mid, **load_kwargs)
-                latent_ch = getattr(vae.config, "latent_channels", 4)
-                vae = vae.to(device).eval()
-                for p in vae.parameters():
-                    p.requires_grad_(False)
-                if mid != model_id:
-                    print(f"[DeepShield] VAE loaded from fallback '{mid}' ({latent_ch}ch latent).")
-                else:
-                    print(f"[DeepShield] VAE loaded and frozen ({mid}, {latent_ch}ch latent).")
-                return vae
-            except Exception as e2:
-                err_str = str(e1) + str(e2)
+            except Exception as e:
+                err_str = str(e)
                 # If this was the primary ID and we have a fallback, try next
                 if mid != ids_to_try[-1]:
                     print(f"[DeepShield] '{mid}' not available, trying fallback...")
                     continue
                 # Last attempt failed — classify the error
-                if "401" in err_str or "403" in err_str or "gated" in err_str.lower():
+                if any(code in err_str for code in ("401", "403")) or "gated" in err_str.lower():
                     print(f"[DeepShield] WARNING: '{model_id}' is a gated model. "
                           f"Accept the license at https://huggingface.co/{model_id} "
                           f"and set HF_TOKEN env var. Skipping.")
-                elif "404" in err_str or "not found" in err_str.lower() or "does not exist" in err_str.lower():
+                elif any(s in err_str.lower() for s in ("404", "not found", "does not exist", "does not appear to have")):
                     print(f"[DeepShield] WARNING: '{model_id}' not found on HuggingFace "
                           f"(may have been removed/deprecated). Skipping.")
                 else:
-                    print(f"[DeepShield] WARNING: Failed to load '{model_id}': {e2}. Skipping.")
+                    print(f"[DeepShield] WARNING: Failed to load '{model_id}': {e}. Skipping.")
                 return None
+
+        # Successfully loaded — validate compatibility before freezing
+        if not _validate_vae_compatibility(vae, mid):
+            del vae
+            # If we have a fallback, try it
+            if mid != ids_to_try[-1]:
+                continue
+            return None
+
+        latent_ch = getattr(vae.config, "latent_channels", 4)
+        vae = vae.to(device).eval()
+        for p in vae.parameters():
+            p.requires_grad_(False)
+        label = f"fallback '{mid}'" if mid != model_id else mid
+        print(f"[DeepShield] VAE loaded and frozen ({label}, {latent_ch}ch latent, 8x downsample).")
+        return vae
+
+    return None
 
 
 def load_unet_and_scheduler(model_id: str, device: torch.device, dtype: torch.dtype):
@@ -474,9 +503,11 @@ def eot_pgd(
         delta.requires_grad_(True)
         x_adv = (x_orig + delta).clamp(-1.0, 1.0)
 
-        # ── EOT: accumulate gradients over augmentations × models ──
-        grad_accum = torch.zeros_like(delta)
+        # ── EOT: accumulate losses over augmentations × models, then grad once ──
+        # Computing one autograd.grad on the summed loss is both correct and
+        # cheaper than calling autograd.grad N times with retain_graph=True.
         loss_log = {"total": 0.0, "encoder": 0.0}
+        total_eot_loss = torch.tensor(0.0, device=x_orig.device)
 
         for _ in range(cfg.n_eot):
             # Apply random preprocessing augmentations (with STE for grad flow)
@@ -487,25 +518,13 @@ def eot_pgd(
             )
 
             # ── Compute loss across all VAEs in ensemble ──
-            eot_loss = torch.tensor(0.0, device=x_orig.device)
             enc_loss_log = 0.0
 
             for model_idx, (cur_vae, cur_target, w) in enumerate(
                 zip(all_vaes, all_targets, weights)
             ):
-                # For ensemble VAEs with different latent sizes (e.g. SDXL),
-                # we may need to resize the input
-                cur_input = x_aug
-                if hasattr(cur_vae.config, 'sample_size') and cur_vae.config.sample_size != cfg.image_size:
-                    target_size = cur_vae.config.sample_size or cfg.image_size
-                    if target_size != x_aug.shape[-1]:
-                        cur_input = F.interpolate(
-                            x_aug, size=(target_size, target_size),
-                            mode="bilinear", align_corners=False,
-                        )
-
                 loss_dict = combined_loss(
-                    cur_input,
+                    x_aug,
                     cur_vae,
                     cur_target,
                     # Only use UNet denoising on primary model
@@ -516,30 +535,25 @@ def eot_pgd(
                     denoising_weight=cfg.denoising_weight if (cfg.use_denoising_loss and model_idx == 0) else 0.0,
                 )
 
-                eot_loss = eot_loss + w * loss_dict["total"]
+                total_eot_loss = total_eot_loss + w * loss_dict["total"]
                 enc_loss_log += w * loss_dict["encoder"].item()
 
-            # Frequency regularization (BlurGuard) — computed on unaugmented x_adv
-            freq_loss = frequency_reg_loss(x_adv, x_orig)
-            total_loss = eot_loss + cfg.freq_lambda * freq_loss
-
-            # Perceptual quality constraint (LPIPS) — keeps protected image
-            # visually close to original by penalizing perceptual distortion.
-            # Naturally concentrates noise in textured regions (hair, fabric)
-            # where it's less visible to the human eye.
-            if cfg.lpips_weight > 0:
-                lpips_loss = perceptual_quality_loss(x_adv, x_orig, x_orig.device)
-                total_loss = total_loss + cfg.lpips_weight * lpips_loss
-
-            # Accumulate gradients
-            grad = torch.autograd.grad(total_loss, delta)[0]
-            grad_accum = grad_accum + grad.detach()
-
-            loss_log["total"] += total_loss.item()
             loss_log["encoder"] += enc_loss_log
 
-        grad_accum = grad_accum / cfg.n_eot
-        loss_avg = {k: v / cfg.n_eot for k, v in loss_log.items()}
+        # Frequency regularization (BlurGuard) — computed on unaugmented x_adv
+        freq_loss = frequency_reg_loss(x_adv, x_orig)
+        total_eot_loss = total_eot_loss / cfg.n_eot + cfg.freq_lambda * freq_loss
+
+        # Perceptual quality constraint (LPIPS)
+        if cfg.lpips_weight > 0:
+            lpips_loss = perceptual_quality_loss(x_adv, x_orig, x_orig.device)
+            total_eot_loss = total_eot_loss + cfg.lpips_weight * lpips_loss
+
+        # Single autograd.grad call on the accumulated loss
+        grad_accum = torch.autograd.grad(total_eot_loss, delta)[0].detach()
+
+        loss_log["total"] = total_eot_loss.item()
+        loss_avg = {"total": loss_log["total"], "encoder": loss_log["encoder"] / cfg.n_eot}
 
         # ── PGD step with L2 gradient normalization (BlurGuard style) ──
         grad_norm = grad_accum.norm(2) + 1e-8

@@ -156,13 +156,20 @@ def adaptive_blur_alignment(
     sigma_search: Tuple[float, float] = (0.1, 5.0),
     n_steps: int = 50,
     lr: float = 0.1,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, float]:
     """
     Apply BlurGuard-style adaptive Gaussian blurring to align the perturbation's
     frequency spectrum with the original image.
 
-    Optimizes blur intensity σ to minimize L_freq while keeping the perturbation
-    as sharp as possible (i.e., uses minimal blurring that achieves alignment).
+    Finds the optimal blur intensity σ that minimizes L_freq while keeping
+    the perturbation as sharp as possible (minimal blurring for alignment).
+
+    Uses a two-phase search:
+      1. Coarse log-space grid search over n_steps candidates
+      2. Fine refinement around the best candidate
+
+    This avoids the previous gradient-based approach where sigma_val.item()
+    detached sigma from autograd, making the optimizer ineffective.
 
     This is run as a post-processing step after PGD converges.
 
@@ -170,43 +177,56 @@ def adaptive_blur_alignment(
         x_adv: Protected image [1, C, H, W].
         x_orig: Original image [1, C, H, W].
         n_bands: Frequency bands for RAPSD.
-        sigma_search: Search range for σ (log-space).
-        n_steps: Gradient steps for σ optimization.
-        lr: Learning rate for σ optimization.
+        sigma_search: Search range for σ.
+        n_steps: Number of candidates in the coarse grid search.
+        lr: Unused (kept for API compatibility).
 
     Returns:
-        Frequency-aligned protected image, same shape as x_adv.
+        (frequency-aligned protected image, optimal sigma).
     """
     perturbation = (x_adv - x_orig).detach()
 
-    # Optimize log(σ) for numerical stability
-    log_sigma = torch.tensor(
-        math.log((sigma_search[0] + sigma_search[1]) / 2),
-        device=x_adv.device,
-        requires_grad=True,
-    )
-    optimizer = torch.optim.Adam([log_sigma], lr=lr)
+    # ── Phase 1: coarse log-space grid search ──
+    log_lo = math.log(sigma_search[0])
+    log_hi = math.log(sigma_search[1])
+    candidates = [math.exp(log_lo + i * (log_hi - log_lo) / max(n_steps - 1, 1))
+                  for i in range(n_steps)]
 
-    for _ in range(n_steps):
-        optimizer.zero_grad()
-        sigma_val = log_sigma.exp().clamp(sigma_search[0], sigma_search[1])
+    best_sigma = candidates[0]
+    best_loss = float("inf")
 
-        # Apply blur with current sigma
-        blurred = apply_gaussian_blur_to_perturbation(
-            perturbation, sigma=sigma_val.item(), kernel_size=11
-        )
-        x_candidate = (x_orig + blurred).clamp(-1.0, 1.0)
-
-        loss = frequency_reg_loss(x_candidate, x_orig, n_bands)
-        loss.backward()
-        optimizer.step()
-
-    # Apply final optimal blur
     with torch.no_grad():
-        sigma_final = log_sigma.exp().clamp(sigma_search[0], sigma_search[1]).item()
+        for sigma in candidates:
+            blurred = apply_gaussian_blur_to_perturbation(
+                perturbation, sigma=sigma, kernel_size=11
+            )
+            x_candidate = (x_orig + blurred).clamp(-1.0, 1.0)
+            loss = frequency_reg_loss(x_candidate, x_orig, n_bands).item()
+            if loss < best_loss:
+                best_loss = loss
+                best_sigma = sigma
+
+    # ── Phase 2: fine search around best candidate ──
+    fine_lo = max(best_sigma * 0.5, sigma_search[0])
+    fine_hi = min(best_sigma * 2.0, sigma_search[1])
+    fine_candidates = [fine_lo + i * (fine_hi - fine_lo) / 19 for i in range(20)]
+
+    with torch.no_grad():
+        for sigma in fine_candidates:
+            blurred = apply_gaussian_blur_to_perturbation(
+                perturbation, sigma=sigma, kernel_size=11
+            )
+            x_candidate = (x_orig + blurred).clamp(-1.0, 1.0)
+            loss = frequency_reg_loss(x_candidate, x_orig, n_bands).item()
+            if loss < best_loss:
+                best_loss = loss
+                best_sigma = sigma
+
+    # ── Apply optimal blur ──
+    with torch.no_grad():
         blurred_final = apply_gaussian_blur_to_perturbation(
-            perturbation, sigma=sigma_final, kernel_size=11
+            perturbation, sigma=best_sigma, kernel_size=11
         )
         x_aligned = (x_orig + blurred_final).clamp(-1.0, 1.0)
 
-    return x_aligned, sigma_final
+    return x_aligned, best_sigma
