@@ -136,7 +136,7 @@ ENSEMBLE_PRESETS = {
         ],
     },
     "nudifier": {
-        "desc": "5 VAEs — targets the full range of nudifier architectures (~16GB VRAM)",
+        "desc": "5 VAEs — targets the full range of SD-based nudifier architectures (~16GB VRAM)",
         "models": [
             "stable-diffusion-v1-5/stable-diffusion-inpainting",
             "stabilityai/stable-diffusion-2-inpainting",
@@ -144,14 +144,27 @@ ENSEMBLE_PRESETS = {
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",  # SDXL inpainting
         ],
     },
+    "nudifier-v2": {
+        "desc": "7 VAEs — adds Flux + SD 3.5 for next-gen nudifier coverage (~20GB VRAM)",
+        "models": [
+            "stable-diffusion-v1-5/stable-diffusion-inpainting",  # SD 1.5 inpainting (most current nudifiers)
+            "stabilityai/stable-diffusion-2-inpainting",           # SD 2.x inpainting
+            "stabilityai/sd-vae-ft-mse",                           # Community NSFW VAE (Realistic Vision etc.)
+            "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",   # SDXL inpainting
+            "black-forest-labs/FLUX.1-dev",                        # Flux VAE — next-gen architecture (16ch latent)
+            "stabilityai/stable-diffusion-3.5-large",              # SD 3.5 VAE — latest Stability AI architecture
+        ],
+    },
     "max": {
-        "desc": "6 VAEs — maximum coverage including SDXL base (~20GB VRAM)",
+        "desc": "8 VAEs — every architecture we can target (~24GB VRAM)",
         "models": [
             "stable-diffusion-v1-5/stable-diffusion-inpainting",
             "stabilityai/stable-diffusion-2-inpainting",
             "stabilityai/sd-vae-ft-mse",
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
             "stabilityai/stable-diffusion-xl-base-1.0",
+            "black-forest-labs/FLUX.1-dev",
+            "stabilityai/stable-diffusion-3.5-large",
         ],
     },
 }
@@ -231,22 +244,47 @@ def save_protected_image(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
-    """Load just the VAE from a Stable Diffusion model checkpoint.
+    """Load just the VAE from a Stable Diffusion / Flux / SD3 model checkpoint.
 
-    Handles both standard SD models (VAE in 'vae' subfolder) and models
-    where the VAE is at the top level (e.g. some SDXL configurations).
+    Handles:
+      - Standard SD models (VAE in 'vae' subfolder)
+      - Standalone VAEs at the top level (e.g. sd-vae-ft-mse)
+      - Gated models (Flux, SD 3.5) — requires HuggingFace token
+      - Different latent dimensions (4ch for SD 1.x/2.x/XL, 16ch for Flux/SD3)
+
+    For gated models, set HF_TOKEN env var or run `huggingface-cli login`.
     """
+    import os
     from diffusers import AutoencoderKL
+
+    hf_token = os.environ.get("HF_TOKEN", None)
     print(f"[DeepShield] Loading VAE from '{model_id}'...")
+
+    load_kwargs = {"torch_dtype": dtype}
+    if hf_token:
+        load_kwargs["token"] = hf_token
+
     try:
-        vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype)
-    except (OSError, ValueError):
-        # Some models (e.g. SDXL) may have VAE at top level or need different loading
-        vae = AutoencoderKL.from_pretrained(model_id, torch_dtype=dtype)
+        vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", **load_kwargs)
+    except (OSError, ValueError, Exception) as e:
+        try:
+            # Some models have VAE at top level (e.g. sd-vae-ft-mse)
+            vae = AutoencoderKL.from_pretrained(model_id, **load_kwargs)
+        except Exception as e2:
+            # If it's a gated model auth issue, give a helpful message
+            err_str = str(e) + str(e2)
+            if "401" in err_str or "403" in err_str or "gated" in err_str.lower():
+                print(f"[DeepShield] WARNING: '{model_id}' is a gated model. "
+                      f"Accept the license at https://huggingface.co/{model_id} "
+                      f"and set HF_TOKEN env var. Skipping this model.")
+                return None
+            raise
+
+    latent_ch = getattr(vae.config, "latent_channels", 4)
     vae = vae.to(device).eval()
     for p in vae.parameters():
         p.requires_grad_(False)
-    print(f"[DeepShield] VAE loaded and frozen ({model_id}).")
+    print(f"[DeepShield] VAE loaded and frozen ({model_id}, {latent_ch}ch latent).")
     return vae
 
 
@@ -294,10 +332,12 @@ def build_runtime(cfg: ProtectionConfig) -> Dict[str, Any]:
     # Load primary VAE
     vae = load_vae(cfg.model_id, device, cfg.dtype)
 
-    # Load ensemble VAEs
+    # Load ensemble VAEs (skip any that fail to load, e.g. gated models without auth)
     ensemble_vaes = []
     for eid in cfg.ensemble_model_ids:
-        ensemble_vaes.append(load_vae(eid, device, cfg.dtype))
+        ev = load_vae(eid, device, cfg.dtype)
+        if ev is not None:
+            ensemble_vaes.append(ev)
 
     if ensemble_vaes:
         n_total = 1 + len(ensemble_vaes)
@@ -550,7 +590,9 @@ def protect_image(
     else:
         ensemble_vaes = []
         for eid in cfg.ensemble_model_ids:
-            ensemble_vaes.append(load_vae(eid, device, cfg.dtype))
+            ev = load_vae(eid, device, cfg.dtype)
+            if ev is not None:
+                ensemble_vaes.append(ev)
         unet, noise_scheduler, text_embeddings = None, None, None
         if cfg.use_denoising_loss:
             unet, noise_scheduler, text_embeddings = load_unet_and_scheduler(

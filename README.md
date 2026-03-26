@@ -91,9 +91,9 @@ pip install -r requirements_deepshield.txt
 
 ### Protect a single image
 ```bash
-# Recommended settings for clothoff.net (GPU required, ~8-12 min on A10G)
+# Recommended settings for clothoff.net (GPU required, ~10-15 min on A10G)
 python run_protection.py --input photo.jpg --output photo_protected.png \
-    --ensemble nudifier --epsilon 24 --steps 400 --n-eot 10 --lpips-weight 2.0
+    --ensemble nudifier-v2 --epsilon 24 --steps 400 --n-eot 10 --lpips-weight 2.0
 
 # Quick test (faster, weaker)
 python run_protection.py --input photo.jpg --output photo_protected.png \
@@ -137,8 +137,9 @@ protect_image("photo.jpg", "photo_protected.png", cfg)
 | Preset | VAEs | VRAM | Best for |
 |---|---|---|---|
 | `standard` | 3 (SD1.5 + inpainting + SD2.1) | ~12GB | Quick protection, limited VRAM |
-| `nudifier` | 5 (+ SD2.0-inpaint + ft-mse VAE + SDXL-inpaint) | ~16GB | **Recommended for clothoff.net** |
-| `max` | 6 (+ SDXL base) | ~20GB | Maximum coverage |
+| `nudifier` | 5 (+ SD2.0-inpaint + ft-mse VAE + SDXL-inpaint) | ~16GB | Current-gen SD-based nudifiers |
+| `nudifier-v2` | 7 (+ Flux VAE + SD 3.5 VAE) | ~20GB | **Recommended — covers next-gen nudifiers** |
+| `max` | 8 (+ SDXL base) | ~24GB | Every architecture, fits on A10G |
 
 ### How nudifiers work and why these models break them
 
@@ -156,17 +157,21 @@ The critical step is **inpainting**: the image is encoded through a VAE (Variati
 
 The problem is we don't know *exactly* which model each nudifier uses. Research shows they are typically fine-tuned from Stable Diffusion inpainting checkpoints, often using community NSFW models like Realistic Vision as a base. By attacking multiple VAEs simultaneously and averaging their gradients, we find a perturbation that corrupts the **shared latent space structure** common to all SD-family models — so even if clothoff.net uses a model we didn't specifically target, the perturbation still transfers.
 
-**Models in the `nudifier` preset and why each one matters:**
+**Models in the `nudifier-v2` preset and why each one matters:**
 
-| Model | What it covers | Why it matters |
-|---|---|---|
-| `runwayml/stable-diffusion-v1-5` | SD 1.5 base VAE | Foundation model — most nudifiers are fine-tuned from this |
-| `stable-diffusion-v1-5/stable-diffusion-inpainting` | SD 1.5 inpainting VAE | The exact inpainting architecture nudifiers use to replace clothing. Slightly different VAE weights from base SD 1.5 due to inpainting fine-tuning |
-| `stabilityai/stable-diffusion-2-inpainting` | SD 2.x inpainting VAE | Genuinely different VAE architecture from SD 1.x — covers nudifiers built on newer SD 2.x models |
-| `stabilityai/sd-vae-ft-mse` | Fine-tuned community VAE | Used by Realistic Vision and most community NSFW/photorealistic models. Many nudifiers use this VAE variant for better skin/body quality |
-| `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | SDXL inpainting VAE | Completely different VAE architecture (larger latent space). Covers next-gen nudifier tools upgrading to SDXL |
+| Model | Architecture | Latent | Why it matters |
+|---|---|---|---|
+| `runwayml/stable-diffusion-v1-5` | SD 1.5 | 4ch | Foundation model — most current nudifiers are fine-tuned from this |
+| `stable-diffusion-v1-5/stable-diffusion-inpainting` | SD 1.5 inpaint | 4ch | The exact inpainting architecture nudifiers use to replace clothing |
+| `stabilityai/stable-diffusion-2-inpainting` | SD 2.x inpaint | 4ch | Different VAE weights from SD 1.x — covers SD 2.x-based nudifiers |
+| `stabilityai/sd-vae-ft-mse` | Community VAE | 4ch | Used by Realistic Vision + community NSFW models for better skin quality |
+| `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | SDXL inpaint | 4ch | Larger architecture — covers SDXL-based nudifier tools |
+| `black-forest-labs/FLUX.1-dev` | **Flux** (2024) | **16ch** | **Next-gen architecture** from ex-Stability AI team. Completely different VAE. CivitAI already has Flux-based NSFW models ("Fluxed Up", "CHROMA"). Nudifiers are migrating here. |
+| `stabilityai/stable-diffusion-3.5-large` | **SD 3.5 MMDiT** (2025) | **16ch** | **Latest Stability AI model.** Different VAE from all prior SD versions. Covers the newest generation of tools. |
 
 **Key insight**: We don't train any models. These are all pre-trained open-source models loaded as-is from HuggingFace. We just use their VAE encoders as surrogate targets during adversarial optimization. The more diverse the surrogate set, the better the perturbation transfers to unknown black-box nudifiers.
+
+**Note on gated models**: Flux and SD 3.5 are gated on HuggingFace — you must accept their license and set `HF_TOKEN` env var before use. If a gated model can't load, DeepShield skips it gracefully and continues with the remaining models.
 
 ---
 
@@ -174,7 +179,7 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `--ensemble` | off | Preset: `standard`, `nudifier`, or `max` |
+| `--ensemble` | off | Preset: `standard`, `nudifier`, `nudifier-v2`, or `max` |
 | `--ensemble-models` | — | Custom model IDs (overrides preset) |
 | `--epsilon` | `20` | Perturbation budget (0-255 units). **24 recommended for clothoff** |
 | `--steps` | `300` | PGD iterations. 200 minimum, **400 for ensemble** |
@@ -193,9 +198,9 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 --ensemble nudifier --epsilon 20 --lpips-weight 3.0 --steps 300
 ```
 
-**Production (break clothoff.net):**
+**Production (break clothoff.net — recommended):**
 ```bash
---ensemble nudifier --epsilon 24 --steps 400 --n-eot 10 --lpips-weight 2.0
+--ensemble nudifier-v2 --epsilon 24 --steps 400 --n-eot 10 --lpips-weight 2.0
 ```
 
 **Maximum (don't care about image quality):**
@@ -220,7 +225,8 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 pip install -r requirements_deepshield.txt
 
 # Configure (these are the recommended production defaults)
-export DEEPSHIELD_ENSEMBLE_PRESET=nudifier
+export HF_TOKEN=hf_your_token_here      # required for Flux + SD 3.5 (gated models)
+export DEEPSHIELD_ENSEMBLE_PRESET=nudifier-v2
 export DEEPSHIELD_EPSILON=24
 export DEEPSHIELD_STEPS=400
 export DEEPSHIELD_N_EOT=10

@@ -111,11 +111,12 @@ def parse_args():
     )
     model_grp.add_argument(
         "--ensemble", type=str, nargs="?", const="standard", default=None,
-        choices=["standard", "nudifier", "max"],
+        choices=["standard", "nudifier", "nudifier-v2", "max"],
         help="Enable multi-model ensemble attack using a preset. "
              "standard: 3 VAEs (~12GB). "
-             "nudifier: 5 VAEs including inpainting + NSFW community models (~16GB). "
-             "max: 6 VAEs maximum coverage (~20GB). "
+             "nudifier: 5 VAEs, SD-family models (~16GB). "
+             "nudifier-v2: 7 VAEs, adds Flux + SD 3.5 for next-gen coverage (~20GB). "
+             "max: 8 VAEs, every architecture (~24GB). "
              "Default preset if just '--ensemble' with no value: standard.",
     )
     model_grp.add_argument(
