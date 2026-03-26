@@ -163,7 +163,7 @@ ENSEMBLE_PRESETS = {
             "stabilityai/sd-vae-ft-mse",
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
             "stabilityai/stable-diffusion-xl-base-1.0",
-            "black-forest-labs/FLUX.1-dev",
+            "black-forest-labs/FLUX.1-schnell",                     # Same VAE as FLUX.1-dev, Apache 2.0 (commercial OK)
             "stabilityai/stable-diffusion-3.5-large",
         ],
     },
@@ -253,41 +253,28 @@ _MODEL_FALLBACKS = {
 
 
 def _validate_vae_compatibility(vae, model_id: str, device: torch.device) -> bool:
-    """Check that a loaded VAE uses 4-channel latents with 8x downsampling.
+    """Validate that a loaded VAE can encode images and report its latent shape.
 
-    VAEs from Flux (16ch) and some SD 3.5 variants use different latent
-    structures that are incompatible with our encoder_loss (MSE against a
-    4ch gray target).
+    Accepts both 4ch (SD 1.x/2.x/XL) and 16ch (Flux/SD3.5) VAEs.
+    Each VAE gets its own gray target in the PGD loop, so different channel
+    counts are fine — encoder_loss normalizes by channel count.
 
-    Instead of guessing from config (unreliable — SD v1.5 has 4 down blocks
-    but only 3 actually downsample), we do a quick test encode on a tiny
-    tensor to check the actual output shape.
+    We do a quick test encode to verify the VAE works and log its shape.
 
-    Returns True if the VAE is compatible, False otherwise.
+    Returns True if the VAE is usable, False otherwise.
     """
-    latent_ch = getattr(vae.config, "latent_channels", 4)
-    if latent_ch != 4:
-        print(f"[DeepShield] SKIP '{model_id}': uses {latent_ch}-channel latents "
-              f"(need 4ch). Flux/SD3 VAEs are not yet supported in ensemble mode.")
-        return False
-
-    # Quick test encode to verify actual downsample factor
     try:
         test_size = 64  # small test image to save memory
         test_input = torch.zeros(1, 3, test_size, test_size, device=device, dtype=next(vae.parameters()).dtype)
         with torch.no_grad():
             test_latent = vae.encode(test_input).latent_dist.mean
-        spatial = test_latent.shape[-1]
-        downsample = test_size // spatial
-        if downsample != 8:
-            print(f"[DeepShield] SKIP '{model_id}': actual downsample is {downsample}x "
-                  f"(need 8x). {test_size}px input → {spatial}px latent.")
-            return False
+        _, ch, h, w = test_latent.shape
+        downsample = test_size // h
+        print(f"[DeepShield]   → latent shape: {ch}ch {h}×{w} ({downsample}x downsample)")
+        return True
     except Exception as e:
         print(f"[DeepShield] SKIP '{model_id}': test encode failed: {e}")
         return False
-
-    return True
 
 
 def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
@@ -355,7 +342,7 @@ def load_vae(model_id: str, device: torch.device, dtype: torch.dtype):
                 continue
             return None
         label = f"fallback '{mid}'" if mid != model_id else mid
-        print(f"[DeepShield] VAE loaded and frozen ({label}, {latent_ch}ch latent, 8x downsample).")
+        print(f"[DeepShield] VAE loaded and frozen ({label}, {latent_ch}ch latent).")
         return vae
 
     return None
@@ -412,9 +399,16 @@ def build_runtime(cfg: ProtectionConfig) -> Dict[str, Any]:
         if ev is not None:
             ensemble_vaes.append(ev)
 
-    if ensemble_vaes:
-        n_total = 1 + len(ensemble_vaes)
-        print(f"[DeepShield] Ensemble loaded: {n_total} VAEs for multi-model attack.")
+    n_requested = len(cfg.ensemble_model_ids)
+    n_loaded = len(ensemble_vaes)
+    n_total = 1 + n_loaded
+    if n_loaded > 0:
+        print(f"[DeepShield] Ensemble loaded: {n_total} VAEs for multi-model attack "
+              f"({n_loaded}/{n_requested} ensemble models loaded successfully).")
+    if n_requested > 0 and n_loaded < n_requested:
+        n_skipped = n_requested - n_loaded
+        print(f"[DeepShield] WARNING: {n_skipped} ensemble model(s) were skipped. "
+              f"Check warnings above. Protection will still work with {n_total} VAE(s).")
 
     unet, noise_scheduler, text_embeddings = None, None, None
     if cfg.use_denoising_loss:
@@ -508,77 +502,82 @@ def eot_pgd(
 
     pbar = tqdm(range(cfg.num_steps), desc=mode_str)
 
-    for step in range(cfg.num_steps):
-        delta.requires_grad_(True)
-        x_adv = (x_orig + delta).clamp(-1.0, 1.0)
+    try:
+        for step in range(cfg.num_steps):
+            delta.requires_grad_(True)
+            x_adv = (x_orig + delta).clamp(-1.0, 1.0)
 
-        # ── EOT: accumulate losses over augmentations × models, then grad once ──
-        # Computing one autograd.grad on the summed loss is both correct and
-        # cheaper than calling autograd.grad N times with retain_graph=True.
-        loss_log = {"total": 0.0, "encoder": 0.0}
-        total_eot_loss = torch.tensor(0.0, device=x_orig.device)
+            # ── EOT: accumulate losses over augmentations × models, then grad once ──
+            loss_log = {"total": 0.0, "encoder": 0.0}
+            total_eot_loss = torch.tensor(0.0, device=x_orig.device)
 
-        for _ in range(cfg.n_eot):
-            # Apply random preprocessing augmentations (with STE for grad flow)
-            x_aug = apply_eot_augmentation(
-                x_adv,
-                jpeg_qualities=cfg.jpeg_qualities,
-                resize_prob=cfg.resize_prob,
-            )
-
-            # ── Compute loss across all VAEs in ensemble ──
-            enc_loss_log = 0.0
-
-            for model_idx, (cur_vae, cur_target, w) in enumerate(
-                zip(all_vaes, all_targets, weights)
-            ):
-                loss_dict = combined_loss(
-                    x_aug,
-                    cur_vae,
-                    cur_target,
-                    # Only use UNet denoising on primary model
-                    unet=unet if model_idx == 0 else None,
-                    noise_scheduler=noise_scheduler if model_idx == 0 else None,
-                    text_embeddings=text_embeddings if model_idx == 0 else None,
-                    encoder_weight=1.0,
-                    denoising_weight=cfg.denoising_weight if (cfg.use_denoising_loss and model_idx == 0) else 0.0,
+            for _ in range(cfg.n_eot):
+                x_aug = apply_eot_augmentation(
+                    x_adv,
+                    jpeg_qualities=cfg.jpeg_qualities,
+                    resize_prob=cfg.resize_prob,
                 )
 
-                total_eot_loss = total_eot_loss + w * loss_dict["total"]
-                enc_loss_log += w * loss_dict["encoder"].item()
+                enc_loss_log = 0.0
+                for model_idx, (cur_vae, cur_target, w) in enumerate(
+                    zip(all_vaes, all_targets, weights)
+                ):
+                    loss_dict = combined_loss(
+                        x_aug,
+                        cur_vae,
+                        cur_target,
+                        unet=unet if model_idx == 0 else None,
+                        noise_scheduler=noise_scheduler if model_idx == 0 else None,
+                        text_embeddings=text_embeddings if model_idx == 0 else None,
+                        encoder_weight=1.0,
+                        denoising_weight=cfg.denoising_weight if (cfg.use_denoising_loss and model_idx == 0) else 0.0,
+                    )
 
-            loss_log["encoder"] += enc_loss_log
+                    total_eot_loss = total_eot_loss + w * loss_dict["total"]
+                    enc_loss_log += w * loss_dict["encoder"].item()
 
-        # Frequency regularization (BlurGuard) — computed on unaugmented x_adv
-        freq_loss = frequency_reg_loss(x_adv, x_orig)
-        total_eot_loss = total_eot_loss / cfg.n_eot + cfg.freq_lambda * freq_loss
+                loss_log["encoder"] += enc_loss_log
 
-        # Perceptual quality constraint (LPIPS)
-        if cfg.lpips_weight > 0:
-            lpips_loss = perceptual_quality_loss(x_adv, x_orig, x_orig.device)
-            total_eot_loss = total_eot_loss + cfg.lpips_weight * lpips_loss
+            # Frequency regularization (BlurGuard) — computed on unaugmented x_adv
+            freq_loss = frequency_reg_loss(x_adv, x_orig)
+            total_eot_loss = total_eot_loss / cfg.n_eot + cfg.freq_lambda * freq_loss
 
-        # Single autograd.grad call on the accumulated loss
-        grad_accum = torch.autograd.grad(total_eot_loss, delta)[0].detach()
+            # Perceptual quality constraint (LPIPS)
+            if cfg.lpips_weight > 0:
+                lpips_loss = perceptual_quality_loss(x_adv, x_orig, x_orig.device)
+                total_eot_loss = total_eot_loss + cfg.lpips_weight * lpips_loss
 
-        loss_log["total"] = total_eot_loss.item()
-        loss_avg = {"total": loss_log["total"], "encoder": loss_log["encoder"] / cfg.n_eot}
+            # Single autograd.grad call on the accumulated loss
+            grad_accum = torch.autograd.grad(total_eot_loss, delta)[0].detach()
 
-        # ── PGD step with L2 gradient normalization (BlurGuard style) ──
-        grad_norm = grad_accum.norm(2) + 1e-8
-        delta = delta.detach() - step_size * (grad_accum / grad_norm)
+            loss_log["total"] = total_eot_loss.item()
+            loss_avg = {"total": loss_log["total"], "encoder": loss_log["encoder"] / cfg.n_eot}
 
-        # ── Project to L∞ epsilon ball ──
-        delta = delta.clamp(-epsilon, epsilon)
+            # ── PGD step with L2 gradient normalization (BlurGuard style) ──
+            grad_norm = grad_accum.norm(2) + 1e-8
+            delta = delta.detach() - step_size * (grad_accum / grad_norm)
 
-        # ── Ensure valid image range ──
-        delta = (x_orig + delta).clamp(-1.0, 1.0) - x_orig
+            # ── Project to L∞ epsilon ball ──
+            delta = delta.clamp(-epsilon, epsilon)
 
-        pbar.set_description(
-            f"Loss={loss_avg['total']:.4f} "
-            f"| Enc={loss_avg['encoder']:.4f} "
-            f"| δ_max={delta.abs().max().item()*255:.1f}/255"
-        )
+            # ── Ensure valid image range ──
+            delta = (x_orig + delta).clamp(-1.0, 1.0) - x_orig
+
+            pbar.set_description(
+                f"Loss={loss_avg['total']:.4f} "
+                f"| Enc={loss_avg['encoder']:.4f} "
+                f"| δ_max={delta.abs().max().item()*255:.1f}/255"
+            )
+
+            # Periodically free cached VRAM to prevent fragmentation
+            if step % 50 == 49 and x_orig.device.type == "cuda":
+                torch.cuda.empty_cache()
+
+    except torch.cuda.OutOfMemoryError:
+        print("\n[DeepShield] ERROR: CUDA out of memory during PGD optimization.")
+        print("[DeepShield] Try: --dtype float16, fewer --steps, smaller --ensemble, or lower --n-eot")
+        print(f"[DeepShield] Returning best delta from step {step}/{cfg.num_steps}.")
+        # Return whatever delta we have so far — partial protection is better than none
 
     return delta.detach()
 

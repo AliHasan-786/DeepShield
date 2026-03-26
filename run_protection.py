@@ -139,6 +139,17 @@ def parse_args():
              "Requires 'pip install lpips'. Default: 0.0 (off).",
     )
 
+    # ── Presets ──
+    preset_grp = parser.add_argument_group("Quick presets (override individual params)")
+    preset_grp.add_argument(
+        "--preset", type=str, default=None,
+        choices=["demo", "strong"],
+        help="Quick preset that sets sensible defaults. "
+             "demo: nudifier ensemble, ε=20, 300 steps, LPIPS=2.0 (good image quality). "
+             "strong: nudifier-v2 ensemble (incl. Flux+SD3.5), ε=24, 400 steps, LPIPS=1.0 (max protection). "
+             "Individual params (--epsilon, --steps, etc.) override preset values.",
+    )
+
     # ── Misc ──
     misc = parser.add_argument_group("Misc")
     misc.add_argument(
@@ -164,18 +175,48 @@ def parse_args():
 def build_config(args):
     """Convert parsed CLI args to ProtectionConfig."""
     import torch
-    from deepshield.protect import ProtectionConfig
+    from deepshield.protect import ENSEMBLE_PRESETS, ProtectionConfig
+
+    # ── Apply preset defaults (individual flags override) ──
+    _PRESETS = {
+        "demo": {
+            "ensemble": "nudifier",
+            "epsilon": 20.0,
+            "steps": 300,
+            "n_eot": 8,
+            "lpips_weight": 2.0,
+        },
+        "strong": {
+            "ensemble": "nudifier-v2",
+            "epsilon": 24.0,
+            "steps": 400,
+            "n_eot": 10,
+            "lpips_weight": 1.0,
+        },
+    }
+
+    if args.preset:
+        p = _PRESETS[args.preset]
+        print(f"[DeepShield] Using preset '{args.preset}'")
+        # Only apply preset values if the user didn't explicitly set them
+        if args.epsilon == 20.0:   # parser default
+            args.epsilon = p["epsilon"]
+        if args.steps == 300:      # parser default
+            args.steps = p["steps"]
+        if args.n_eot == 8:        # parser default
+            args.n_eot = p["n_eot"]
+        if args.lpips_weight == 0.0:  # parser default
+            args.lpips_weight = p["lpips_weight"]
+        if args.ensemble is None and args.ensemble_models is None:
+            args.ensemble = p["ensemble"]
 
     epsilon = args.epsilon / 255.0
     step_size = (args.step_size / 255.0) if args.step_size else epsilon / 100.0
     dtype = torch.float16 if args.dtype == "float16" else torch.float32
 
     # Determine ensemble model IDs
-    from deepshield.protect import ENSEMBLE_PRESETS
-
     ensemble_model_ids = []
     if args.ensemble_models:
-        # Explicit custom models override --ensemble preset
         ensemble_model_ids = args.ensemble_models
     elif args.ensemble:
         preset = ENSEMBLE_PRESETS.get(args.ensemble, ENSEMBLE_PRESETS["standard"])

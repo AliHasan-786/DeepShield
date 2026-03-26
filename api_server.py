@@ -32,8 +32,9 @@ DEFAULT_STEPS = int(os.getenv("DEEPSHIELD_STEPS", "300"))
 DEFAULT_EOT = int(os.getenv("DEEPSHIELD_N_EOT", "8"))
 DEFAULT_FREQ_LAMBDA = float(os.getenv("DEEPSHIELD_FREQ_LAMBDA", "8.0"))
 DEFAULT_USE_DENOISING = os.getenv("DEEPSHIELD_USE_DENOISING_LOSS", "false").lower() == "true"
-DEFAULT_ENSEMBLE_PRESET = os.getenv("DEEPSHIELD_ENSEMBLE_PRESET", "nudifier-v2")
+DEFAULT_ENSEMBLE_PRESET = os.getenv("DEEPSHIELD_ENSEMBLE_PRESET", "nudifier")
 DEFAULT_LPIPS_WEIGHT = float(os.getenv("DEEPSHIELD_LPIPS_WEIGHT", "0.0"))
+DEFAULT_DTYPE = os.getenv("DEEPSHIELD_DTYPE", "float32")  # "float16" to halve VRAM
 DEFAULT_ALLOW_ORIGINS = [
     origin.strip()
     for origin in os.getenv("DEEPSHIELD_ALLOW_ORIGINS", "*").split(",")
@@ -75,6 +76,9 @@ def build_default_config(
     preset = ENSEMBLE_PRESETS.get(DEFAULT_ENSEMBLE_PRESET, {})
     ensemble_ids = preset.get("models", [])
 
+    import torch
+    dtype = torch.float16 if DEFAULT_DTYPE == "float16" else torch.float32
+
     return ProtectionConfig(
         epsilon=epsilon_value,
         step_size=epsilon_value / 100.0,
@@ -86,6 +90,7 @@ def build_default_config(
         ensemble_model_ids=ensemble_ids,
         lpips_weight=DEFAULT_LPIPS_WEIGHT,
         device=DEFAULT_DEVICE,
+        dtype=dtype,
     )
 
 

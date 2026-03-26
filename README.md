@@ -35,7 +35,18 @@ Built on top of [BlurGuard (NeurIPS 2025)](https://github.com/jsu-kim/BlurGuard)
 - **Nudifier-specific surrogate models**: Added `stabilityai/sd-vae-ft-mse` (Realistic Vision / community NSFW VAE), `stabilityai/stable-diffusion-2-inpainting`, and `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`.
 - **Graceful gated model handling**: If a HuggingFace-gated model (SD 3.5) can't load, it's skipped with a warning instead of crashing.
 - **All models commercially licensable**: Flux-schnell (Apache 2.0), SD 3.5/SDXL (Stability Community License, free under 1M revenue), SD 1.x/2.x (CreativeML Open RAIL-M).
-- **API server defaults to `nudifier-v2` preset** with ensemble enabled out of the box.
+- **API server defaults to `nudifier` preset** with ensemble enabled out of the box. Set `DEEPSHIELD_ENSEMBLE_PRESET=nudifier-v2` for next-gen coverage.
+
+### v0.3.1 — Stability & 16ch VAE support
+
+- **Flux + SD 3.5 now fully working**: Fixed VAE validation to accept 16-channel latent VAEs (Flux, SD 3.5) alongside standard 4-channel VAEs (SD 1.x/2.x/XL).
+- **Channel-normalized encoder loss**: MSE loss is normalized by latent channel count so 16ch and 4ch models contribute equally to the gradient.
+- **Quick presets**: `--preset demo` and `--preset strong` for one-flag configuration.
+- **OOM resilience**: PGD loop catches CUDA OOM and returns partial protection instead of crashing. Periodic VRAM cleanup every 50 steps.
+- **Smoke test**: `scripts/smoke_test.py` for verifying deployment before serving.
+- **Fixed sigma optimization**: Replaced broken gradient-based blur alignment with robust grid search.
+- **Fixed EOT loop**: Single autograd.grad call instead of per-augmentation (faster, less VRAM).
+- **API dtype support**: `DEEPSHIELD_DTYPE=float16` env var to halve VRAM usage.
 
 ### v0.2.0 — Initial DeepShield
 
@@ -92,15 +103,25 @@ Attacks both the VAE encoder (fast, primary) and the UNet denoiser (optional, st
 pip install -r requirements_deepshield.txt
 ```
 
+### Run smoke test (do this first on EC2!)
+```bash
+python scripts/smoke_test.py --ensemble nudifier-v2
+```
+Verifies all VAEs load, encodes work, gradients flow, and LPIPS loads. Takes <30 seconds on GPU.
+
 ### Protect a single image
 ```bash
-# Recommended settings for clothoff.net (GPU required, ~10-15 min on A10G)
+# Using presets (simplest):
+python run_protection.py --input photo.jpg --output photo_protected.png --preset demo
+python run_protection.py --input photo.jpg --output photo_protected.png --preset strong
+
+# Preset details:
+#   demo:   nudifier ensemble, ε=20, 300 steps, LPIPS=2.0 (good image quality)
+#   strong: nudifier-v2 ensemble (incl. Flux+SD3.5), ε=24, 400 steps, LPIPS=1.0
+
+# Or manual configuration:
 python run_protection.py --input photo.jpg --output photo_protected.png \
     --ensemble nudifier-v2 --epsilon 24 --steps 400 --n-eot 10 --lpips-weight 2.0
-
-# Quick test (faster, weaker)
-python run_protection.py --input photo.jpg --output photo_protected.png \
-    --ensemble standard
 
 # Maximum protection (don't care about subtle artifacts)
 python run_protection.py --input photo.jpg --output photo_protected.png \
@@ -226,17 +247,33 @@ The problem is we don't know *exactly* which model each nudifier uses. Research 
 | `nudifier-v2` | 20GB | g5.xlarge (24GB A10G) |
 | `max` | 24GB | g5.xlarge (24GB A10G) |
 
-### Run the API server
+### Setup and verify
 ```bash
+# Install dependencies
 pip install -r requirements_deepshield.txt
 
+# Set HuggingFace token (required for SD 3.5 gated model)
+export HF_TOKEN=hf_your_token_here
+
+# Run smoke test FIRST — verifies all VAEs load and gradients flow
+python scripts/smoke_test.py --ensemble nudifier-v2
+
+# Quick test with a real image
+python run_protection.py --input test.jpg --output protected.png --preset strong
+```
+
+### Run the API server
+```bash
 # Configure (these are the recommended production defaults)
-export HF_TOKEN=hf_your_token_here      # required for SD 3.5 (gated model)
+export HF_TOKEN=hf_your_token_here
 export DEEPSHIELD_ENSEMBLE_PRESET=nudifier-v2
 export DEEPSHIELD_EPSILON=24
 export DEEPSHIELD_STEPS=400
 export DEEPSHIELD_N_EOT=10
 export DEEPSHIELD_LPIPS_WEIGHT=2.0
+
+# If tight on VRAM, use float16 (~halves memory usage)
+# export DEEPSHIELD_DTYPE=float16
 
 # Start
 ./scripts/run_api.sh
@@ -278,9 +315,35 @@ DeepShield/
 ├── api_server.py            # FastAPI server for EC2 deployment
 ├── requirements_deepshield.txt
 ├── deploy/                  # systemd service files
+├── scripts/
+│   ├── run_api.sh           # API launch script
+│   └── smoke_test.py        # Pre-deployment verification
 ├── BlurGuard/               # Original BlurGuard codebase (NeurIPS 2025)
-└── scripts/                 # Deployment helpers
 ```
+
+---
+
+## Troubleshooting
+
+**CUDA out of memory**
+- Try `--dtype float16` to halve VRAM usage
+- Use a smaller ensemble: `--ensemble nudifier` instead of `nudifier-v2`
+- Reduce `--n-eot` from 10 to 6
+- Reduce `--image-size` from 512 to 384
+
+**SD 3.5 won't load ("gated model")**
+- Accept the license at https://huggingface.co/stabilityai/stable-diffusion-3.5-large
+- Set `export HF_TOKEN=hf_your_token_here`
+- DeepShield will skip it gracefully if it can't load — protection still works
+
+**Models not found on HuggingFace (404)**
+- Some Stability AI models have been removed (EU AI Act compliance)
+- DeepShield has community mirror fallbacks for SD 2.x models
+- If a model is missing, it's skipped and protection continues with remaining VAEs
+
+**Slow on CPU**
+- CPU mode works but is 50-100× slower than GPU
+- Reduce `--steps 100 --n-eot 4` for reasonable CPU times (~30-60 min)
 
 ---
 

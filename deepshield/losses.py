@@ -54,7 +54,12 @@ def encoder_loss(
     Minimizing this pushes the protected image's latent representation
     far from its true content and toward the gray target.
 
-    L_enc = MSE(E(x̂), z_target)
+    L_enc = MSE(E(x̂), z_target) / latent_channels
+
+    Normalized by the number of latent channels so that 16ch VAEs
+    (Flux, SD 3.5) contribute equally to the gradient as 4ch VAEs
+    (SD 1.x/2.x/XL). Without normalization, 16ch models would
+    produce ~4× larger MSE and dominate the ensemble gradient.
 
     Args:
         x_adv: Protected image [1, C, H, W] in [-1, 1].
@@ -62,10 +67,11 @@ def encoder_loss(
         z_target: Gray image latent, precomputed via get_gray_target().
 
     Returns:
-        Scalar loss.
+        Scalar loss (channel-normalized).
     """
     z_adv = vae.encode(x_adv).latent_dist.mean
-    return F.mse_loss(z_adv, z_target)
+    n_channels = z_adv.shape[1]
+    return F.mse_loss(z_adv, z_target) / n_channels
 
 
 # ──────────────────────────────────────────────────────────────────────────────
