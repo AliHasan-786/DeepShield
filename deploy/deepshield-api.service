@@ -9,9 +9,13 @@ WorkingDirectory=/home/ubuntu/DeepShield
 Environment=DEEPSHIELD_HOST=0.0.0.0
 Environment=DEEPSHIELD_PORT=8000
 Environment=DEEPSHIELD_DEVICE=cuda
-Environment=DEEPSHIELD_EPSILON=20
-Environment=DEEPSHIELD_STEPS=300
-Environment=DEEPSHIELD_N_EOT=8
+Environment=DEEPSHIELD_ENSEMBLE_PRESET=nudifier-v2
+Environment=DEEPSHIELD_DTYPE=float16
+Environment=DEEPSHIELD_EPSILON=36
+Environment=DEEPSHIELD_STEPS=100
+Environment=DEEPSHIELD_N_EOT=2
+Environment=DEEPSHIELD_IMAGE_SIZE=384
+Environment=DEEPSHIELD_APPLY_FREQ_ALIGNMENT=false
 Environment=DEEPSHIELD_ALLOW_ORIGINS=*
 ExecStart=/home/ubuntu/DeepShield/scripts/run_api.sh
 Restart=on-failure

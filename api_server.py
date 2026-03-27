@@ -9,7 +9,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -17,7 +16,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from deepshield import ProtectionConfig, protect_image
@@ -27,14 +26,16 @@ from deepshield.protect import build_runtime
 APP_START_TIME = time.time()
 DEFAULT_DEVICE = os.getenv("DEEPSHIELD_DEVICE", "cuda")
 DEFAULT_MODEL_ID = os.getenv("DEEPSHIELD_MODEL_ID", "runwayml/stable-diffusion-v1-5")
-DEFAULT_EPSILON = float(os.getenv("DEEPSHIELD_EPSILON", "20"))
-DEFAULT_STEPS = int(os.getenv("DEEPSHIELD_STEPS", "300"))
-DEFAULT_EOT = int(os.getenv("DEEPSHIELD_N_EOT", "8"))
+DEFAULT_EPSILON = float(os.getenv("DEEPSHIELD_EPSILON", "36"))
+DEFAULT_STEPS = int(os.getenv("DEEPSHIELD_STEPS", "100"))
+DEFAULT_EOT = int(os.getenv("DEEPSHIELD_N_EOT", "2"))
+DEFAULT_IMAGE_SIZE = int(os.getenv("DEEPSHIELD_IMAGE_SIZE", "384"))
 DEFAULT_FREQ_LAMBDA = float(os.getenv("DEEPSHIELD_FREQ_LAMBDA", "8.0"))
 DEFAULT_USE_DENOISING = os.getenv("DEEPSHIELD_USE_DENOISING_LOSS", "false").lower() == "true"
-DEFAULT_ENSEMBLE_PRESET = os.getenv("DEEPSHIELD_ENSEMBLE_PRESET", "nudifier")
+DEFAULT_APPLY_FREQ_ALIGNMENT = os.getenv("DEEPSHIELD_APPLY_FREQ_ALIGNMENT", "false").lower() == "true"
+DEFAULT_ENSEMBLE_PRESET = os.getenv("DEEPSHIELD_ENSEMBLE_PRESET", "nudifier-v2")
 DEFAULT_LPIPS_WEIGHT = float(os.getenv("DEEPSHIELD_LPIPS_WEIGHT", "0.0"))
-DEFAULT_DTYPE = os.getenv("DEEPSHIELD_DTYPE", "float32")  # "float16" to halve VRAM
+DEFAULT_DTYPE = os.getenv("DEEPSHIELD_DTYPE", "float16")
 DEFAULT_ALLOW_ORIGINS = [
     origin.strip()
     for origin in os.getenv("DEEPSHIELD_ALLOW_ORIGINS", "*").split(",")
@@ -70,6 +71,7 @@ def build_default_config(
     epsilon: Optional[float] = None,
     steps: Optional[int] = None,
     n_eot: Optional[int] = None,
+    image_size: Optional[int] = None,
 ) -> ProtectionConfig:
     epsilon_value = (epsilon if epsilon is not None else DEFAULT_EPSILON) / 255.0
     from deepshield.protect import ENSEMBLE_PRESETS
@@ -89,7 +91,9 @@ def build_default_config(
         model_id=DEFAULT_MODEL_ID,
         ensemble_model_ids=ensemble_ids,
         lpips_weight=DEFAULT_LPIPS_WEIGHT,
+        image_size=image_size if image_size is not None else DEFAULT_IMAGE_SIZE,
         device=DEFAULT_DEVICE,
+        apply_freq_alignment=DEFAULT_APPLY_FREQ_ALIGNMENT,
         dtype=dtype,
     )
 
@@ -137,6 +141,7 @@ async def process_image(
     epsilon: Optional[float] = Form(default=None),
     steps: Optional[int] = Form(default=None),
     n_eot: Optional[int] = Form(default=None),
+    image_size: Optional[int] = Form(default=None),
 ):
     upload = image or file
     if upload is None:
@@ -165,7 +170,12 @@ async def process_image(
                     raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_UPLOAD_MB} MB.")
                 buffer.write(chunk)
 
-        cfg = build_default_config(epsilon=epsilon, steps=steps, n_eot=n_eot)
+        cfg = build_default_config(
+            epsilon=epsilon,
+            steps=steps,
+            n_eot=n_eot,
+            image_size=image_size,
+        )
         protected_path = Path(
             protect_image(
                 str(input_path),
@@ -177,11 +187,12 @@ async def process_image(
         )
 
         download_name = f"{Path(upload.filename or 'upload').stem}_deepshield.png"
-        response_path = Path(tmpdir) / download_name
-        shutil.copy2(protected_path, response_path)
+        image_bytes = protected_path.read_bytes()
 
-        return FileResponse(
-            path=response_path,
+        return Response(
+            content=image_bytes,
             media_type="image/png",
-            filename=download_name,
+            headers={
+                "Content-Disposition": f'attachment; filename="{download_name}"',
+            },
         )
