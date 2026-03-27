@@ -140,23 +140,99 @@ def gaussian_blur(x: torch.Tensor, kernel_size: int = 5, sigma: float = 1.0) -> 
 # Composite EOT augmentation sampler
 # ──────────────────────────────────────────────────────────────────────────────
 
+def webp_compress_ste(x: torch.Tensor, quality: int) -> torch.Tensor:
+    """
+    WebP compression with Straight-Through Estimator.
+
+    Many nudifier platforms (clothoff.net, undressai.tools) transcode uploads
+    to WebP before inference. Including WebP in EOT forces the perturbation
+    to survive this format conversion in addition to JPEG.
+
+    Args:
+        x: Tensor [B, C, H, W] in [-1, 1].
+        quality: WebP quality in [1, 95].
+
+    Returns:
+        WebP-compressed tensor, same shape, STE for gradient flow.
+    """
+    x_uint8 = _tensor_to_uint8(x.detach().cpu())
+    results = []
+    for i in range(x_uint8.shape[0]):
+        img = _to_pil(x_uint8[i])
+        buf = io.BytesIO()
+        img.save(buf, format="WEBP", quality=quality)
+        buf.seek(0)
+        compressed = Image.open(buf).convert("RGB")
+        results.append(_to_tensor(compressed) * 2.0 - 1.0)
+    x_compressed = torch.stack(results).to(x.device)
+    return x + (x_compressed - x).detach()
+
+
+def color_jitter_ste(
+    x: torch.Tensor,
+    brightness: float = 0.15,
+    contrast: float = 0.15,
+    saturation: float = 0.1,
+) -> torch.Tensor:
+    """
+    Random brightness/contrast/saturation jitter with STE.
+
+    Nudifier platforms often apply image normalization (gamma correction,
+    brightness/contrast adjustment) before inference. Including color jitter
+    forces the perturbation to survive these transformations.
+
+    All values are sampled uniformly in [-factor, +factor].
+    """
+    # Work in [0, 1] range
+    x_01 = (x.detach().clamp(-1, 1) + 1.0) / 2.0
+
+    # Brightness: multiply by random factor
+    b = 1.0 + random.uniform(-brightness, brightness)
+    x_01 = (x_01 * b).clamp(0, 1)
+
+    # Contrast: scale around mean
+    if contrast > 0:
+        c = 1.0 + random.uniform(-contrast, contrast)
+        mean = x_01.mean(dim=(-2, -1), keepdim=True)
+        x_01 = ((x_01 - mean) * c + mean).clamp(0, 1)
+
+    # Saturation: interpolate toward grayscale
+    if saturation > 0:
+        s = 1.0 + random.uniform(-saturation, saturation)
+        gray = x_01.mean(dim=1, keepdim=True)
+        x_01 = (s * x_01 + (1 - s) * gray).clamp(0, 1)
+
+    x_jittered = x_01 * 2.0 - 1.0
+    return x + (x_jittered - x).detach()
+
+
 def apply_eot_augmentation(
     x: torch.Tensor,
-    jpeg_qualities: List[int] = (50, 60, 70, 80, 90),
+    jpeg_qualities: List[int] = (40, 50, 60, 70, 80, 90),
     resize_prob: float = 0.5,
     blur_prob: float = 0.2,
+    webp_prob: float = 0.3,
+    color_jitter_prob: float = 0.4,
 ) -> torch.Tensor:
     """
     Apply a random composition of augmentations to simulate nudifier preprocessing.
 
-    Always applies JPEG compression (the main threat), with optional resize/blur.
+    Augmentation pipeline (matches real nudifier preprocessing):
+      1. Format compression — JPEG always, WebP with probability webp_prob
+         (clothoff.net, undressai.tools transcode uploads to WebP)
+      2. Resize — simulates aggressive platform downscaling (0.5-1.0x)
+      3. Color jitter — brightness/contrast/saturation normalization
+      4. Mild Gaussian blur — denoising preprocessing
+
     All operations use STE so gradients flow back through x.
 
     Args:
         x: Input tensor [B, C, H, W] in [-1, 1].
         jpeg_qualities: Pool of JPEG quality values to sample from.
-        resize_prob: Probability of applying random resize.
-        blur_prob: Probability of applying Gaussian blur.
+        resize_prob: Probability of random resize augmentation.
+        blur_prob: Probability of Gaussian blur.
+        webp_prob: Probability of additionally applying WebP compression.
+        color_jitter_prob: Probability of color jitter augmentation.
 
     Returns:
         Augmented tensor, same shape as x, gradients flow through x.
@@ -165,11 +241,20 @@ def apply_eot_augmentation(
     quality = random.choice(jpeg_qualities)
     x = jpeg_compress_ste(x, quality)
 
-    # 2. Resize — simulates platform downscaling before model inference
-    if random.random() < resize_prob:
-        x = random_resize_ste(x, scale_range=(0.80, 1.0))
+    # 2. WebP — many platforms transcode to WebP before inference
+    if random.random() < webp_prob:
+        webp_q = random.randint(60, 90)
+        x = webp_compress_ste(x, webp_q)
 
-    # 3. Mild Gaussian blur — simulates denoising preprocessing
+    # 3. Resize — simulates platform downscaling (wider range: 0.5-1.0x)
+    if random.random() < resize_prob:
+        x = random_resize_ste(x, scale_range=(0.5, 1.0))
+
+    # 4. Color jitter — brightness/contrast normalization
+    if random.random() < color_jitter_prob:
+        x = color_jitter_ste(x)
+
+    # 5. Mild Gaussian blur — denoising preprocessing
     if random.random() < blur_prob:
         sigma = random.uniform(0.3, 0.8)
         x = gaussian_blur(x, kernel_size=3, sigma=sigma)

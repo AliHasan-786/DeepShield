@@ -5,9 +5,11 @@ Multiple loss strategies for disrupting AI nudifiers and deepfake tools.
 
 Loss hierarchy (most → least impactful for nudifiers):
   1. encoder_loss: Pushes VAE latent to a gray/noise target (fast, primary)
-  2. denoising_loss: Maximizes UNet denoising error (stronger, slower)
-  3. lpips_quality_loss: Constrains perceptual distortion (image quality)
-  4. ensemble_loss: Average of encoder + denoising across multiple models
+  2. pixel_target_loss: Pushes x_adv toward a noisy target in pixel space
+     (Mist-style — helps against models that differ architecturally from surrogates)
+  3. denoising_loss: Maximizes UNet denoising error (stronger, slower)
+  4. lpips_quality_loss: Constrains perceptual distortion (image quality)
+  5. ensemble_loss: Average of encoder + denoising across multiple models
 
 The encoder loss disrupts how the VAE encodes the image — critical because
 ALL diffusion-based nudifiers (Stable Diffusion variants) must encode the
@@ -195,6 +197,63 @@ def combined_loss(
 
     losses["total"] = total
     return losses
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pixel-space target loss (Mist-style)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_pixel_target(x: torch.Tensor, mode: str = "noise") -> torch.Tensor:
+    """
+    Build a pixel-space attack target.
+
+    Unlike the VAE encoder loss (which attacks in latent space), this
+    operates directly in pixel space. It helps against models that are
+    architecturally far from the surrogate VAEs — if their encoder maps
+    the adversarial image to a garbage pixel-space target, any decoder
+    will produce incoherent output regardless of the specific architecture.
+
+    Args:
+        x: Reference image [1, C, H, W] in [-1, 1] (used for shape/device).
+        mode: "noise" = fixed high-frequency noise pattern (maximally disruptive),
+              "gray"  = uniform gray (same as VAE target for consistency).
+
+    Returns:
+        Target tensor, same shape as x.
+    """
+    if mode == "noise":
+        # Fixed random seed so the target is consistent across PGD steps.
+        # High-frequency noise is maximally far from any natural image.
+        gen = torch.Generator(device=x.device)
+        gen.manual_seed(1337)
+        return torch.rand(x.shape, device=x.device, dtype=x.dtype, generator=gen) * 2.0 - 1.0
+    else:
+        return torch.zeros_like(x)
+
+
+def pixel_target_loss(
+    x_adv: torch.Tensor,
+    pixel_target: torch.Tensor,
+) -> torch.Tensor:
+    """
+    MSE between the adversarial image and a fixed pixel-space target.
+
+    Minimizing this pushes x_adv toward the target pattern in pixel space.
+    Combined with encoder_loss (which pushes in latent space), this provides
+    a second, complementary attack signal that improves transfer to models
+    whose VAE differs significantly from the surrogates.
+
+    Reference: Mist v2's "fused" mode combines latent attack (LatentAttack)
+    with pixel-space target pushing for stronger out-of-distribution transfer.
+
+    Args:
+        x_adv: Protected image [1, C, H, W] in [-1, 1].
+        pixel_target: Target image from get_pixel_target(), same shape.
+
+    Returns:
+        Scalar MSE loss.
+    """
+    return F.mse_loss(x_adv, pixel_target)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -189,8 +189,8 @@ def build_config(args):
         },
         "strong": {
             "ensemble": "nudifier-v2",
-            "epsilon": 24.0,
-            "steps": 400,
+            "epsilon": 32.0,
+            "steps": 500,
             "n_eot": 10,
             "lpips_weight": 1.0,
         },

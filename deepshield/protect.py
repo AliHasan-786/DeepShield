@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 from .augmentations import apply_eot_augmentation
 from .frequency import adaptive_blur_alignment, frequency_reg_loss
-from .losses import combined_loss, get_gray_target, perceptual_quality_loss
+from .losses import combined_loss, get_gray_target, get_pixel_target, pixel_target_loss, perceptual_quality_loss
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,6 +109,34 @@ class ProtectionConfig:
     """Weight for LPIPS perceptual quality loss. Higher = less visible perturbation
     but potentially weaker adversarial effect. Recommended: 2.0-5.0 for demos.
     Set to 0.0 to disable (original behavior)."""
+
+    # --- Pixel-space target loss (Mist-style) ---
+    pixel_loss_weight: float = 0.3
+    """Weight for pixel-space target loss. Pushes x_adv toward a fixed noise
+    target in pixel space — complements encoder_loss for better black-box
+    transfer to models architecturally distant from the surrogate VAEs.
+    Set to 0.0 to disable."""
+
+    # --- Momentum iterative attack (MI-FGSM) ---
+    momentum_decay: float = 0.9
+    """Gradient momentum decay factor (μ in MI-FGSM).
+    0.9 is the standard value from Dong et al. 2018. Accumulating gradient
+    momentum across PGD steps dramatically improves black-box transfer by
+    stabilizing the gradient direction and escaping local optima.
+    Set to 0.0 to disable (reverts to standard PGD sign gradient)."""
+
+    # --- Translation-Invariant gradient (TIM) ---
+    use_ti_gradient: bool = True
+    """Whether to apply Gaussian smoothing to gradients before the PGD step.
+    From the TI-FGSM attack (Dong et al. 2019): smoothing gradients reduces
+    spatial overfitting to the specific surrogate model's spatial structure,
+    improving transfer to models with different spatial inductive biases."""
+
+    ti_kernel_size: int = 7
+    """Gaussian kernel size for TI gradient smoothing. Larger = more smoothing."""
+
+    ti_sigma: float = 1.5
+    """Gaussian sigma for TI gradient smoothing. Larger = smoother gradient."""
 
     # --- Frequency alignment post-processing ---
     apply_freq_alignment: bool = True
@@ -427,6 +455,35 @@ def build_runtime(cfg: ProtectionConfig) -> Dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Gradient processing utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _make_ti_kernel(kernel_size: int, sigma: float, device: torch.device, n_channels: int) -> torch.Tensor:
+    """Build a depthwise Gaussian kernel for translation-invariant gradient smoothing."""
+    coords = torch.arange(kernel_size, device=device, dtype=torch.float32) - kernel_size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g /= g.sum()
+    kernel_2d = g.outer(g)
+    return kernel_2d.view(1, 1, kernel_size, kernel_size).expand(n_channels, 1, -1, -1)
+
+
+def _ti_smooth_gradient(grad: torch.Tensor, kernel_size: int, sigma: float) -> torch.Tensor:
+    """
+    Apply depthwise Gaussian smoothing to a gradient tensor.
+
+    Translation-Invariant FGSM (TI-FGSM, Dong et al. 2019):
+    Smoothing the gradient with a Gaussian kernel makes the attack less sensitive
+    to the specific spatial structure of the surrogate model — the perturbation
+    generalizes better to architecturally different target models like those used
+    by black-box nudifier services.
+    """
+    B, C, H, W = grad.shape
+    kernel = _make_ti_kernel(kernel_size, sigma, grad.device, C)
+    padding = kernel_size // 2
+    return F.conv2d(grad, kernel, padding=padding, groups=C)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Core EOT-PGD protection loop
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -494,12 +551,18 @@ def eot_pgd(
     weights = [w / w_sum for w in weights]
 
     is_ensemble = n_models > 1
-    mode_str = f"EOT-PGD (ensemble: {n_models} VAEs)" if is_ensemble else "EOT-PGD"
+    mode_str = f"EOT-PGD MI+TI (ensemble: {n_models} VAEs)" if is_ensemble else "EOT-PGD MI+TI"
 
     # Initialize from a random point inside the full L∞ epsilon ball.
     # A small init underuses the budget and weakens transfer.
     delta = (torch.rand_like(x_orig) * 2.0 - 1.0) * epsilon
     delta = delta.to(x_orig.device)
+
+    # MI-FGSM: momentum gradient accumulation buffer
+    momentum_grad = torch.zeros_like(delta)
+
+    # Pixel-space target (Mist-style) — fixed noise pattern
+    px_target = get_pixel_target(x_orig, mode="noise") if cfg.pixel_loss_weight > 0 else None
 
     pbar = tqdm(range(cfg.num_steps), desc=mode_str)
 
@@ -539,6 +602,11 @@ def eot_pgd(
 
                 loss_log["encoder"] += enc_loss_log
 
+            # Pixel-space target loss (Mist-style) — on unaugmented x_adv
+            if cfg.pixel_loss_weight > 0 and px_target is not None:
+                px_loss = pixel_target_loss(x_adv, px_target)
+                total_eot_loss = total_eot_loss + cfg.pixel_loss_weight * px_loss
+
             # Frequency regularization (BlurGuard) — computed on unaugmented x_adv
             freq_loss = frequency_reg_loss(x_adv, x_orig)
             total_eot_loss = total_eot_loss / cfg.n_eot + cfg.freq_lambda * freq_loss
@@ -549,13 +617,26 @@ def eot_pgd(
                 total_eot_loss = total_eot_loss + cfg.lpips_weight * lpips_loss
 
             # Single autograd.grad call on the accumulated loss
-            grad_accum = torch.autograd.grad(total_eot_loss, delta)[0].detach()
+            grad_raw = torch.autograd.grad(total_eot_loss, delta)[0].detach()
 
             loss_log["total"] = total_eot_loss.item()
             loss_avg = {"total": loss_log["total"], "encoder": loss_log["encoder"] / cfg.n_eot}
 
-            # ── PGD step for an L∞-bounded attack ──
-            delta = delta.detach() - step_size * grad_accum.sign()
+            # ── Translation-Invariant gradient smoothing (TI-FGSM) ──
+            # Smoothing the gradient with a Gaussian kernel reduces spatial
+            # overfitting to the surrogate model — improves black-box transfer.
+            if cfg.use_ti_gradient:
+                grad_raw = _ti_smooth_gradient(grad_raw, cfg.ti_kernel_size, cfg.ti_sigma)
+
+            # ── MI-FGSM: momentum gradient accumulation ──
+            # Normalize current gradient by L1 norm, then accumulate with decay.
+            # This smooths the update direction across steps and escapes local optima,
+            # dramatically improving black-box transfer (Dong et al. 2018).
+            grad_norm = grad_raw / (grad_raw.abs().mean() + 1e-8)
+            momentum_grad = cfg.momentum_decay * momentum_grad + grad_norm
+
+            # ── PGD step using momentum gradient sign ──
+            delta = delta.detach() - step_size * momentum_grad.sign()
 
             # ── Project to L∞ epsilon ball ──
             delta = delta.clamp(-epsilon, epsilon)
