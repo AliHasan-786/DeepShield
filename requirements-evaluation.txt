@@ -1,0 +1,7 @@
+# Install in a Python 3.10 CUDA environment after requirements_deepshield.txt.
+diffusers>=0.35,<0.38
+transformers>=4.48,<5
+accelerate>=1.2,<2
+safetensors>=0.4,<1
+facenet-pytorch>=2.6,<3
+lpips>=0.1.4,<0.2

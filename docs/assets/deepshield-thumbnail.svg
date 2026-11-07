@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">DeepShield evaluation layers</title>
+  <desc id="desc">A source image passes through bounded noise, transformations, and an unknown editor into a measured outcome.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1020"/><stop offset="1" stop-color="#172554"/></linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#67e8f9"/><stop offset="1" stop-color="#2563eb"/></linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <g fill="none" stroke="#334155" stroke-width="2" opacity=".65"><path d="M0 112h1200M0 224h1200M0 336h1200M0 448h1200M0 560h1200"/><path d="M200 0v675M400 0v675M600 0v675M800 0v675M1000 0v675"/></g>
+  <text x="76" y="105" fill="#f8fafc" font-family="system-ui,sans-serif" font-size="54" font-weight="700">DeepShield</text>
+  <text x="78" y="153" fill="#94a3b8" font-family="system-ui,sans-serif" font-size="24">What survives transfer—and at what visual cost?</text>
+  <g font-family="system-ui,sans-serif" text-anchor="middle">
+    <g transform="translate(120 260)"><rect width="180" height="180" rx="22" fill="#1e293b" stroke="#64748b" stroke-width="3"/><circle cx="90" cy="72" r="32" fill="#475569"/><path d="M43 139c12-34 82-34 94 0" fill="#475569"/><text x="90" y="214" fill="#cbd5e1" font-size="20">SOURCE</text></g>
+    <path d="M324 350h94" stroke="#67e8f9" stroke-width="5"/><path d="m418 350-18-12v24z" fill="#67e8f9"/>
+    <g transform="translate(440 246)"><path d="M90 0 168 28v70c0 55-35 94-78 112C47 192 12 153 12 98V28z" fill="url(#shield)"/><path d="m50 101 27 27 54-62" fill="none" stroke="#e0f2fe" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/><text x="90" y="242" fill="#cbd5e1" font-size="20">BOUNDED NOISE</text></g>
+    <path d="M632 350h94" stroke="#67e8f9" stroke-width="5"/><path d="m726 350-18-12v24z" fill="#67e8f9"/>
+    <g transform="translate(748 260)"><rect width="180" height="180" rx="22" fill="#1e293b" stroke="#a78bfa" stroke-width="3"/><text x="90" y="66" fill="#ddd6fe" font-size="25">JPEG</text><text x="90" y="105" fill="#ddd6fe" font-size="25">RESIZE</text><text x="90" y="144" fill="#ddd6fe" font-size="25">EDITOR ?</text><text x="90" y="214" fill="#cbd5e1" font-size="20">TRANSFER</text></g>
+    <path d="M952 350h94" stroke="#67e8f9" stroke-width="5"/><path d="m1046 350-18-12v24z" fill="#67e8f9"/>
+    <g transform="translate(1062 286)"><rect width="92" height="128" rx="18" fill="#0f172a" stroke="#f59e0b" stroke-width="3"/><path d="M1080 325h56M1080 349h40M1080 373h48" stroke="#fbbf24" stroke-width="6" stroke-linecap="round"/><text x="46" y="160" fill="#cbd5e1" font-size="20">MEASURE</text></g>
+  </g>
+  <rect x="76" y="582" width="1048" height="2" fill="#334155"/>
+  <text x="76" y="627" fill="#94a3b8" font-family="system-ui,sans-serif" font-size="20">IMPLEMENTED ENGINE + OFFLINE-TESTED HARNESS • EFFECTIVENESS NOT YET MEASURED</text>
+</svg>

@@ -1,0 +1,32 @@
+{
+  "contractVersion": 1,
+  "id": "deepshield",
+  "title": "DeepShield — Adversarial Image Protection Prototype",
+  "course": "Independent group project",
+  "semester": "2025–2026",
+  "oneLine": "An adversarial image-protection engine and paired evaluation harness built to expose where transfer works, where it fails, and what it costs visually.",
+  "themes": ["Machine Learning", "Security", "Evaluation"],
+  "role": "Ali authored the initial enhanced pipeline and later robustness methods; BlurGuard authors and former collaborators are credited in the repository.",
+  "status": "source-public",
+  "evidenceStage": "preliminary",
+  "primaryMetric": "6/6 offline evaluation-harness tests passing",
+  "demoUrl": null,
+  "repoUrl": "https://github.com/AliHasan-786/DeepShield",
+  "writeupUrl": "docs/PORTFOLIO_CASE_STUDY.md",
+  "thumbnail": "docs/assets/deepshield-thumbnail.svg",
+  "featured": false,
+  "release": {
+    "commit": null,
+    "checkedAt": "2026-11-07",
+    "publicationStatus": "pending-coordinator-review"
+  },
+  "evidence": [
+    {
+      "claim": "6/6 offline evaluation-harness tests passing",
+      "artifact": "tests/test_evaluation.py",
+      "revision": "checkpoint commit pending",
+      "sample": "6 deterministic software tests; no model-effectiveness experiment",
+      "scope": "schema, JPEG preprocessing, matrix rendering, and fake-adapter paired-run persistence"
+    }
+  ]
+}

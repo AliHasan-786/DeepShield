@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "protocol_status": "draft",
+  "seeds": [17, 42, 73],
+  "thresholds": {
+    "identity_similarity_min": 0.65,
+    "clip_edit_fidelity_min": 0.25,
+    "source": "PROVISIONAL ONLY — calibrate on an unprotected pilot, then freeze"
+  },
+  "samples": [
+    {
+      "id": "synthetic-person-01",
+      "original_path": "evaluation_assets/synthetic-person-01/original.png",
+      "mask_path": "evaluation_assets/synthetic-person-01/mask.png",
+      "identity_reference_path": "evaluation_assets/synthetic-person-01/original.png",
+      "prompt": "a person wearing a blue denim jacket",
+      "variants": [
+        {
+          "id": "deepshield-e20",
+          "path": "evaluation_assets/synthetic-person-01/deepshield-e20.png",
+          "method": "DeepShield",
+          "epsilon_255": 20
+        }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "sd15-inpaint",
+      "architecture": "Stable Diffusion 1.5",
+      "task": "inpainting",
+      "model_id": "stable-diffusion-v1-5/stable-diffusion-inpainting",
+      "jpeg_quality": 85,
+      "steps": 30,
+      "guidance_scale": 7.5,
+      "width": 512,
+      "height": 512,
+      "strength": 0.75
+    },
+    {
+      "id": "sdxl-inpaint",
+      "architecture": "SDXL",
+      "task": "inpainting",
+      "model_id": "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+      "jpeg_quality": 85,
+      "steps": 30,
+      "guidance_scale": 7.5,
+      "width": 1024,
+      "height": 1024,
+      "strength": 0.75
+    }
+  ]
+}
