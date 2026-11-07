@@ -1,178 +1,120 @@
 # DeepShield
 
-**Adversarial image protection against AI nudifiers and deepfake tools.**
+DeepShield is a research prototype for adding bounded adversarial
+perturbations to an image before it reaches a diffusion-based editing pipeline.
+The implementation combines BlurGuard-style frequency regularization with
+expectation over transformations (EOT), encoder objectives, and optional
+denoising objectives.
 
-Protects your images so they look identical to the originals — but are impossible to process with state-of-the-art nudifiers like clothoff.net, undress.app, and similar tools.
+> **Evidence status:** this repository contains an implemented prototype. It
+> does not establish that protected images are impossible to edit, that the
+> method transfers to a proprietary service, or that it survives arbitrary
+> preprocessing. No defense-success percentage is claimed from this public
+> source snapshot.
 
-Built on top of [BlurGuard (NeurIPS 2025)](https://github.com/jsu-kim/BlurGuard) with significant enhancements for robustness against real-world nudifier pipelines.
+## The useful question
 
----
+The project is best treated as an evaluation problem:
 
-## What's new vs. baseline BlurGuard
+**Under a fixed visual budget, when does a protection transfer through realistic
+preprocessing to a held-out editor, when does it fail, and what does it cost in
+image quality?**
 
-| Feature | BlurGuard (baseline) | DeepShield Enhanced |
-|---|---|---|
-| JPEG robustness | ❌ Fails after compression | ✅ EOT-PGD survives JPEG q=40+ |
-| Perturbation budget | 16/255 | **20/255** (configurable up to 32) |
-| Frequency alignment | ✅ | ✅ Adaptive per-image |
-| Denoising loss | ❌ | ✅ Optional UNet loss |
-| Format support | PNG only | ✅ PNG, JPEG, WebP, BMP, TIFF |
-| Batch processing | ❌ | ✅ |
+A fixed adversarial perturbation is not permanent or universal protection.
+Model changes, compression, cropping, reconstruction, purification, and other
+processing can weaken or remove it.
 
----
+## What this source implements
 
-## Why the baseline failed against clothoff.net
+- iterative perturbation optimization against diffusion components;
+- JPEG-oriented EOT, resizing, blur, and related augmentations;
+- encoder and optional denoising objectives;
+- BlurGuard-derived frequency regularization;
+- configurable pixel budgets and optimization steps;
+- single-image and batch CLI entry points;
+- a FastAPI worker with health and processing endpoints.
 
-Three root causes:
+These are code capabilities, not measured robustness results. In particular,
+sampling JPEG qualities during optimization is not proof that protection
+survives JPEG or an unknown service.
 
-1. **JPEG stripping**: Nudifier platforms re-encode uploaded images as JPEG before running their model. Standard adversarial noise lives in high-frequency space and is completely wiped out by JPEG compression at quality ≤ 85.
+## Quick start
 
-2. **Transfer gap**: BlurGuard optimizes against SD v1.4's VAE encoder. Clothoff.net uses a proprietary fine-tuned model — perturbations don't transfer.
+Installing and running the protection engine may download model weights and may
+require suitable GPU memory:
 
-3. **Insufficient budget**: The default ε=16/255 provides minimal adversarial signal for black-box transfer.
-
-## How DeepShield fixes this
-
-### EOT-PGD (Expectation over Transformations)
-During each PGD optimization step, we apply random JPEG compression (quality 40–90) to the current adversarial image before computing the loss. Gradients are averaged over 8 augmented versions per step. This forces the optimizer to find a perturbation that remains adversarially effective **even after JPEG stripping** — because it was optimized against JPEG versions the whole time.
-
-```
-For each PGD step:
-  grad = mean([∇_δ L(JPEG(x+δ, q)) for q in {40,50,60,70,80,90}])
-  δ ← δ - step_size · grad / ‖grad‖₂
-  δ ← clip(δ, -ε, ε)
-```
-
-### BlurGuard Frequency Regularization
-Adversarial noise constrained to an L∞ ball produces high-frequency artifacts detectable in the power spectrum. By adding a power spectrum alignment loss, we shape the perturbation to follow the natural 1/f² frequency distribution of the image — making it impossible to distinguish from natural variation and impossible to remove with frequency-domain purification.
-
-### Encoder + Denoising Loss Ensemble
-Attack both the VAE encoder (fast, primary) and the UNet denoiser (optional, stronger). Disrupting both points of the diffusion pipeline improves black-box transfer to proprietary nudifier models that share the same fundamental architecture.
-
----
-
-## Quick Start
-
-### Install dependencies
 ```bash
-pip install -r requirements_deepshield.txt
+python -m pip install -r requirements_deepshield.txt
+
+python run_protection.py \
+  --input photo.jpg \
+  --output photo_protected.png
 ```
 
-### Protect a single image
+Batch processing:
+
 ```bash
-# Default settings (GPU required, ~5-10 minutes)
-python run_protection.py --input photo.jpg --output photo_protected.png
-
-# Stronger protection for demo
-python run_protection.py --input photo.jpg --output photo_protected.png \
-    --epsilon 24 --steps 400 --n-eot 10
-
-# CPU fallback (slow — ~1-2 hours)
-python run_protection.py --input photo.jpg --output photo_protected.png \
-    --device cpu --steps 150 --n-eot 4
+python run_protection.py \
+  --input-dir ./photos/ \
+  --output-dir ./protected/
 ```
 
-### Batch protect a folder
+Local API worker:
+
 ```bash
-python run_protection.py --input-dir ./photos/ --output-dir ./protected/
-```
-
-### In Python
-```python
-from deepshield import protect_image, ProtectionConfig
-
-cfg = ProtectionConfig(
-    epsilon=24/255,      # perturbation budget
-    num_steps=400,       # more steps = stronger
-    n_eot=10,            # JPEG robustness samples
-    jpeg_qualities=[40, 50, 60, 70, 80, 90],
-    freq_lambda=8.0,     # BlurGuard frequency regularization
-)
-
-protect_image("photo.jpg", "photo_protected.png", cfg)
-```
-
-### Run the EC2 API worker
-```bash
-pip install -r requirements_deepshield.txt
-
-# Optional but recommended
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements_deepshield.txt
-
-# Start the FastAPI server
 ./scripts/run_api.sh
-```
-
-Health and process endpoints:
-```bash
 curl http://127.0.0.1:8000/health
-curl -X POST http://127.0.0.1:8000/process -F image=@photo.jpg -o protected.png
 ```
 
-### Run via systemd on EC2
-Copy `deploy/deepshield-api.service` to `/etc/systemd/system/deepshield-api.service`, then:
+The API is a prototype and should not be exposed as an unauthenticated public
+service.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable deepshield-api
-sudo systemctl start deepshield-api
-sudo systemctl status deepshield-api
-```
+## Reviewed source checkpoint
 
-To stop the worker when you are not using the EC2 instance:
-```bash
-sudo systemctl stop deepshield-api
-```
+The intentionally reviewed prototype checkpoint is commit
+[`3b2703e49f8e9919b6c29543ce2de3f5b662dc97`](https://github.com/AliHasan-786/DeepShield/tree/3b2703e49f8e9919b6c29543ce2de3f5b662dc97).
+It adds the security audit, explicit evidence boundaries, an offline-tested
+paired-evaluation harness, and public case-study material without running a GPU
+experiment.
 
----
+- [Bounded portfolio case study](https://github.com/AliHasan-786/DeepShield/blob/3b2703e49f8e9919b6c29543ce2de3f5b662dc97/docs/PORTFOLIO_CASE_STUDY.md)
+- [Evaluation protocol](https://github.com/AliHasan-786/DeepShield/blob/3b2703e49f8e9919b6c29543ce2de3f5b662dc97/docs/EVALUATION_PROTOCOL.md)
+- [Security decision brief](https://github.com/AliHasan-786/DeepShield/blob/3b2703e49f8e9919b6c29543ce2de3f5b662dc97/DECISION_BRIEF.md)
 
-## Parameters
+At that reviewed revision, six deterministic offline harness tests passed. That
+number describes software checks only; it is not an effectiveness metric. No
+GPU transfer matrix, frozen thresholds, approved sample pack, or comparison
+against a proprietary editor was produced.
 
-| Parameter | Default | Notes |
-|---|---|---|
-| `--epsilon` | `20` | Perturbation budget (in 0-255 units). 16=BlurGuard default, 24-32 for demo |
-| `--steps` | `300` | PGD iterations. 200 minimum, 400 for best results |
-| `--n-eot` | `8` | EOT samples per step. Higher = more JPEG-robust but slower |
-| `--jpeg-qualities` | `40 50 60 70 80 90` | JPEG quality range for EOT |
-| `--freq-lambda` | `8.0` | Frequency regularization strength |
-| `--use-denoising-loss` | off | Adds UNet denoising loss (needs ~8GB VRAM) |
-| `--device` | `cuda` | cuda / cpu / mps |
-| `--dtype` | `float32` | Use `float16` to save VRAM |
+## Authorship and attribution
 
----
+DeepShield began as a group extension of
+[BlurGuard](https://github.com/jsu-kim/BlurGuard). BlurGuard's original authors
+and MIT notice remain credited in [LICENSE](LICENSE).
 
-## Known nudifiers tested against
-- clothoff.net
-- undress.app
-- undressai.tools
-- nudify.online
+Git history records Ali Hasan as the author of the initial enhanced DeepShield
+pipeline. The repository also contains meaningful work by the original
+BlurGuard authors and former project collaborators, including API/deployment
+work and later model/optimization changes. The project is not represented as a
+solely authored codebase.
 
----
+This tree also contains inherited datasets, papers, and third-party reference
+implementations. They are not counted as Ali's original work, benchmark
+evidence, or proof that their licenses permit reuse in another product. The
+reviewed checkpoint records the current attribution and license boundaries in
+[`THIRD_PARTY.md`](https://github.com/AliHasan-786/DeepShield/blob/3b2703e49f8e9919b6c29543ce2de3f5b662dc97/THIRD_PARTY.md).
 
-## Repo structure
-```
-DeepShield/
-├── deepshield/              # Enhanced protection pipeline (NEW)
-│   ├── protect.py           # Main EOT-PGD engine
-│   ├── losses.py            # Encoder + denoising adversarial losses
-│   ├── frequency.py         # BlurGuard power spectrum regularization
-│   └── augmentations.py     # EOT augmentation suite (JPEG, resize, blur)
-├── run_protection.py        # CLI entry point
-├── requirements_deepshield.txt
-├── BlurGuard/               # Original BlurGuard codebase (forked from jsu-kim/BlurGuard)
-├── Anti-DreamBooth/         # Reference: defense via adversarial noise
-├── mist-v2/                 # Reference: Mist watermark protection
-├── photoguard/              # Reference: MIT PhotoGuard PGD baseline
-└── MMA-Diffusion/           # Reference: attack benchmarks
-```
+## Limits
 
----
+- Surrogate-model optimization does not prove black-box transfer.
+- Stronger perturbations may create unacceptable visual degradation.
+- LPIPS and embedding-based measures are proxies, not human guarantees.
+- Proprietary pipelines can change without notice.
+- Negative or null experimental outcomes must remain visible.
+- Any future experiment needs rights-cleared images, fixed preprocessing,
+  frozen thresholds, exact model revisions, and a separate compute cap.
 
-## References
+## License
 
-- **BlurGuard** (NeurIPS 2025): Kim et al., "BlurGuard: A Simple Approach for Robustifying Image Protection Against AI-Powered Editing"
-- **Universal Image Immunization** (Feb 2026): Lee et al., "Universal Image Immunization against Diffusion-based Image Editing via Semantic Injection"
-- **PhotoGuard**: Salman et al., "Raising the Cost of Malicious AI-Powered Image Editing" (2023)
-- **EOT**: Athalye et al., "Synthesizing Robust Adversarial Examples" (2018)
+The tracked DeepShield source retains the repository's existing MIT license.
+Third-party materials remain subject to their own notices and restrictions.
