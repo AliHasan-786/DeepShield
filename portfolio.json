@@ -16,15 +16,15 @@
   "thumbnail": "docs/assets/deepshield-thumbnail.svg",
   "featured": false,
   "release": {
-    "commit": null,
+    "commit": "3b2703e49f8e9919b6c29543ce2de3f5b662dc97",
     "checkedAt": "2026-11-07",
-    "publicationStatus": "pending-coordinator-review"
+    "publicationStatus": "reviewed-source-checkpoint"
   },
   "evidence": [
     {
       "claim": "6/6 offline evaluation-harness tests passing",
       "artifact": "tests/test_evaluation.py",
-      "revision": "checkpoint commit pending",
+      "revision": "3b2703e49f8e9919b6c29543ce2de3f5b662dc97",
       "sample": "6 deterministic software tests; no model-effectiveness experiment",
       "scope": "schema, JPEG preprocessing, matrix rendering, and fake-adapter paired-run persistence"
     }
