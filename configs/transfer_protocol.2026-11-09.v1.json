@@ -1,0 +1,199 @@
+{
+  "schema_version": 2,
+  "protocol_id": "deepshield-current-transfer-2026-11-09-v1",
+  "protocol_status": "draft-unrun",
+  "evidence_state": "unrun",
+  "review_cutoff": "2026-11-09",
+  "decision_use": "Decide whether the current DeepShield protection approach has enough residual value against a modern held-out editor to justify revision, or should be retired as a portfolio research direction.",
+  "question": "At a visual cost matched to BlurGuard on development images, does DeepShield reduce successful edits more than BlurGuard after fixed preprocessing when evaluated on a held-out FLUX.2 editor?",
+  "hypothesis": "DeepShield will have a lower paired edit-success rate than BlurGuard on the held-out editor without exceeding the development-matched visual cost.",
+  "contradiction_rule": "The hypothesis is contradicted if the held-out paired effect does not favor DeepShield, if its uncertainty interval includes effects large enough to reverse the decision, or if its selected operating point exceeds the matched visual-cost rule.",
+  "methods": [
+    {
+      "id": "unprotected",
+      "kind": "control",
+      "license": "not-applicable",
+      "source_url": "https://github.com/AliHasan-786/DeepShield",
+      "source_revision": "3b2703e49f8e9919b6c29543ce2de3f5b662dc97",
+      "implementation_status": "runnable-and-verified"
+    },
+    {
+      "id": "blurguard",
+      "kind": "baseline",
+      "license": "MIT",
+      "source_url": "https://github.com/jsu-kim/BlurGuard",
+      "source_revision": "e1b2d5e03500320e4bad32a8ae04e6dd64eb0495",
+      "implementation_status": "reference-present-adapter-not-verified"
+    },
+    {
+      "id": "deepshield",
+      "kind": "candidate",
+      "license": "MIT with preserved BlurGuard and group attribution",
+      "source_url": "https://github.com/AliHasan-786/DeepShield/tree/3b2703e49f8e9919b6c29543ce2de3f5b662dc97",
+      "source_revision": "3b2703e49f8e9919b6c29543ce2de3f5b662dc97",
+      "implementation_status": "implemented-not-runtime-verified"
+    }
+  ],
+  "editors": [
+    {
+      "id": "sdxl-inpaint-development",
+      "split": "development",
+      "model_id": "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+      "revision": "115134f363124c53c7d878647567d04daf26e41e",
+      "license": "CreativeML Open RAIL++-M",
+      "source_url": "https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+      "availability_checked": "2026-11-09: public, ungated Hugging Face API metadata; no files downloaded",
+      "adapter_status": "implemented-not-verified",
+      "inference_requirements": "Diffusers StableDiffusionXLInpaintPipeline, fp16 example, 1024x1024, mask and prompt; actual VRAM/runtime unmeasured here"
+    },
+    {
+      "id": "flux2-klein-held-out",
+      "split": "held_out",
+      "model_id": "black-forest-labs/FLUX.2-klein-4B",
+      "revision": "e7b7dc27f91deacad38e78976d1f2b499d76a294",
+      "license": "Apache-2.0; model-card use restrictions and safety guidance require execution review",
+      "source_url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B",
+      "availability_checked": "2026-11-09: public, ungated Hugging Face API metadata; official card reports approximately 13 GB VRAM and a 23.7 GB repository; no files downloaded",
+      "adapter_status": "not-implemented",
+      "inference_requirements": "Diffusers Flux2KleinPipeline, bfloat16, four-step reference example, image plus instruction; current generic adapter is not verified compatible"
+    }
+  ],
+  "preprocessing": [
+    {
+      "id": "identity-png",
+      "operation": "Decode the frozen PNG and pass RGB pixels without lossy transcoding.",
+      "implementation": "Must be pinned before execution; output dimensions and SHA-256 recorded."
+    },
+    {
+      "id": "jpeg-85",
+      "operation": "One deterministic RGB JPEG round-trip at quality 85 with fixed subsampling and no metadata.",
+      "implementation": "Use deepshield.evaluation.preprocessing.jpeg_reencode after extending it to record encoder/library versions and exact output SHA-256."
+    }
+  ],
+  "stages": [
+    {
+      "id": "feasibility",
+      "split": "development",
+      "image_slots": 1,
+      "method_condition_count": 3,
+      "protection_condition_count": 2,
+      "editor_ids": ["sdxl-inpaint-development"],
+      "preprocessing_ids": ["identity-png", "jpeg-85"],
+      "seeds": [17],
+      "setup_gpu_hours": 0.5,
+      "publishable": false,
+      "purpose": "Verify licenses, exact loading, deterministic pairing, memory, runtime, and result persistence only; no effectiveness conclusion."
+    },
+    {
+      "id": "development-calibration",
+      "split": "development",
+      "image_slots": 3,
+      "method_condition_count": 7,
+      "protection_condition_count": 6,
+      "editor_ids": ["sdxl-inpaint-development"],
+      "preprocessing_ids": ["identity-png", "jpeg-85"],
+      "seeds": [17, 42],
+      "setup_gpu_hours": 0.25,
+      "publishable": false,
+      "purpose": "Select visual-cost-matched BlurGuard and DeepShield operating points without viewing held-out outputs."
+    },
+    {
+      "id": "held-out-pilot",
+      "split": "held_out",
+      "image_slots": 8,
+      "method_condition_count": 3,
+      "protection_condition_count": 2,
+      "editor_ids": ["flux2-klein-held-out"],
+      "preprocessing_ids": ["identity-png", "jpeg-85"],
+      "seeds": [17, 42, 73],
+      "setup_gpu_hours": 0.25,
+      "publishable": false,
+      "purpose": "Estimate the paired DeepShield-versus-BlurGuard effect with image-cluster uncertainty; label preliminary because eight held-out images cannot support a broad robustness claim."
+    }
+  ],
+  "asset_policy": {
+    "required_development_count": 3,
+    "required_held_out_count": 8,
+    "eligibility_rule": "Use only newly selected synthetic adult portraits or images with explicit research, transformation, and redistribution permission; no minors, named private individuals, or sexualized edit prompts.",
+    "inherited_asset_rule": "No image already present in DeepShield, BlurGuard, a vendored repository, paper, or local download is eligible merely because it is accessible. Each asset requires its own recorded rights basis.",
+    "provenance_rule": "Record source or generator, exact model/tool revision, creation date, prompt if synthetic, license or written permission, consent status when relevant, original SHA-256, and split assignment before protection generation.",
+    "assets": []
+  },
+  "visual_budget": {
+    "status": "requires-development-calibration",
+    "candidate_epsilon_255": [8, 16, 24],
+    "reference_rule": "On development images, BlurGuard epsilon 16 defines the reference median LPIPS visual cost; report its PSNR and L-infinity cost as additional checks.",
+    "selection_rule": "Choose each method's candidate whose development median LPIPS is closest to the BlurGuard-e16 reference without using edit-success outcomes; ties choose lower epsilon. Freeze the selected variants before held-out execution.",
+    "reporting_rule": "Report the full development quality frontier and held-out LPIPS, PSNR, and L-infinity distributions; do not call equal epsilon equal visual quality."
+  },
+  "metrics": {
+    "primary": {
+      "id": "blinded-human-edit-success",
+      "status": "reviewers-rubric-and-budget-unresolved",
+      "rubric": "Show source, instruction, and output with method hidden. Success requires the requested edit, preservation of relevant identity/content, no substantial unrequested change, and no major visual defect. Use at least three independent trained judgments and report disagreement/adjudication.",
+      "failure_mode_rule": "The rubric can conflate model failure with protection success and is sensitive to reviewer interpretation; unprocessable, unsafe, ambiguous, and missing cases remain separate states."
+    },
+    "quality": [
+      {
+        "id": "lpips-alex",
+        "implementation": "lpips 0.1.4 AlexNet network; exact weight digest and package lock required before execution",
+        "failure_modes": "Perceptual proxy can disagree with people and can be insensitive to localized or identity-relevant artifacts."
+      },
+      {
+        "id": "psnr",
+        "implementation": "Deterministic RGB pixel comparison on frozen decoded arrays",
+        "failure_modes": "Pixel fidelity does not equal perceptual acceptability."
+      },
+      {
+        "id": "linf-255",
+        "implementation": "Maximum absolute channel difference in 0-255 space",
+        "failure_modes": "A norm bound does not describe perturbation visibility or semantic damage."
+      }
+    ],
+    "secondary": [
+      {
+        "id": "clip-edit-fidelity",
+        "status": "checkpoint-and-validity-review-required"
+      },
+      {
+        "id": "face-identity-similarity",
+        "status": "checkpoint-demographic-validity-and-no-face-handling-review-required"
+      }
+    ],
+    "automated_metric_warning": "Automated metrics are secondary until exact checkpoints and task validity are frozen; they cannot replace the blinded primary judgment or turn a failed/missing output into favorable evidence."
+  },
+  "analysis": {
+    "unit": "image x method x editor x preprocessing x prompt x seed; prompts are paired and frozen within image before any protected output is viewed",
+    "primary_contrast": "On the held-out editor, paired image-level edit-success difference for DeepShield minus BlurGuard at development-selected visual-cost-matched operating points; lower is better for DeepShield.",
+    "uncertainty_rule": "Average repeated seeds and preprocessing conditions within image, then use a 10000-resample paired cluster bootstrap over held-out images for the effect interval; also show raw discordant cells and per-image effects. Eight image clusters imply wide preliminary uncertainty.",
+    "multiplicity_rule": "One primary contrast only. Label all editor/preprocessing/metric slices exploratory; if inferential p-values are added for secondary outcomes, apply Holm correction over the frozen family and show unadjusted estimates as descriptive only.",
+    "missingness_rule": "Every planned cell retains one of the allowed states. Report measured numerator and planned denominator. Failed, unavailable, missing, unsafe, and unrun cells are never converted to numeric zero or removed from denominators without a separately reported reason.",
+    "stopping_rule": "Stop before held-out execution if any frozen model or method cannot load at the pinned revision, if pairing is nondeterministic, if more than 10 percent of feasibility cells are failed/unavailable, if reviewers or metric validity are unresolved, or if the measured feasibility projection exceeds either proposed compute cap."
+  },
+  "outcomes": {
+    "allowed_cell_states": ["unrun", "measured", "failed", "unavailable", "missing"],
+    "initial_cell_state": "unrun",
+    "zero_semantics": "A measured numeric zero is permitted only inside a measured cell with complete provenance; unrun, unavailable, failed, and missing are categorical states, not zero."
+  },
+  "compute": {
+    "planning_assumptions": {
+      "editor_seconds_per_call": 60,
+      "protection_seconds_per_job": 1200,
+      "provenance": "Conservative planning assumptions only, not benchmarks. Replace both with measured feasibility timing before any later stage or dollar estimate."
+    },
+    "first_gate_proposal": {
+      "stage_ids": ["feasibility"],
+      "max_gpu_hours": 2,
+      "max_usd": 20,
+      "max_download_gb": 30,
+      "approval_status": "not-approved"
+    },
+    "full_study_rule": "Development and held-out stages are not authorized. Recalculate from measured feasibility runtime, live hardware price, storage, and egress; require a new explicit cap before proceeding."
+  },
+  "eventual_interaction": {
+    "input": "Visitor selects a measured image, editor, preprocessing condition, prompt, seed, and protection method from the frozen result manifest.",
+    "observable_output": "Show source, protected image, postprocessed input, edited output, blinded human judgment distribution, quality metrics, exact revisions, and cell state side by side.",
+    "evidence_source": "Only saved paired outputs and append-only measured result records from the frozen protocol; no browser-generated effectiveness math or live provider dependency.",
+    "intended_insight": "Let the visitor see when lower edit success is purchased by visible damage, when preprocessing or a held-out editor defeats protection, and when evidence is unavailable rather than zero."
+  }
+}
